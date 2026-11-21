@@ -1,5 +1,5 @@
 import * as zebar from '../../vendor/zebar.mjs';
-import { currentMonitorName, cursorPosition, hideOnFullscreen, layout, primaryMonitorName, tauriInvoke } from './monitor.js';
+import { currentMonitorName, cursorPosition, hideOnFullscreen, layout, tauriInvoke } from './monitor.js';
 import { keys, store } from './store.js';
 import { actions } from './helper.js';
 
@@ -30,10 +30,10 @@ async function presetFor(name) {
 }
 
 async function ensurePanel(name, monitor) {
-  if (!lazyPanels.has(name) || !monitor || monitor === await primaryMonitorName()) return;
+  if (!lazyPanels.has(name) || !monitor) return;
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   store.set(panelKey(name, monitor, 'ping'), { id, at: Date.now() });
-  for (let waited = 0; waited < 300; waited += 25) {
+  for (let waited = 0; waited < 1000; waited += 25) {
     await new Promise(resolve => setTimeout(resolve, 25));
     if (store.get(panelKey(name, monitor, 'pong')) === id) return;
   }

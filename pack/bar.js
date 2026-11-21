@@ -450,6 +450,21 @@ option('showActiveWindow', false, value => { nodes.activeWindow.hidden = !value;
 
 /* STELLARIA CUSTOMIZER TASK GROUPING START */
 let taskMenuOpen = false;
+let lastIdleSeconds = 0;
+const taskPopoutKinds = new Set(['taskGroup', 'taskMenu']);
+
+function resetTaskPopoutState() {
+  taskMenuOpen = false;
+  const request = store.get(keys.popout(monitor));
+  if (request?.open && taskPopoutKinds.has(request.kind)) {
+    store.set(keys.popout(monitor), { ...request, open: false, at: Date.now() });
+  }
+}
+
+window.addEventListener('pageshow', resetTaskPopoutState);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) resetTaskPopoutState();
+});
 
 function taskGroupKey(task) {
   return String(task.exe || task.process || task.id || '').toLowerCase();
@@ -677,6 +692,10 @@ function relayHelperState() {
     const seconds = idle?.seconds ?? 0;
     store.set(keys.idle, { seconds, at: Date.now() });
     const threshold = Math.max(1, Number(getOption('idleMinutes', 10)) || 10) * 60 - 15;
+    const enteredIdle = lastIdleSeconds < threshold && seconds >= threshold;
+    const resumedFromIdle = lastIdleSeconds >= threshold && seconds < 5;
+    if (enteredIdle || resumedFromIdle) resetTaskPopoutState();
+    lastIdleSeconds = seconds;
     const running = Date.now() - store.get('stellaria:idle:running', 0) < 3000;
     if (getOption('idleScreen', true) && seconds >= threshold && !running) {
       store.set('stellaria:idle:running', Date.now());
