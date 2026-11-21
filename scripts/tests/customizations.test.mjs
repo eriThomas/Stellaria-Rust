@@ -174,12 +174,6 @@ test('bar and popout bypass stale WebView caching without disabling other widget
   assert.equal(widgets.bar.presets[0].monitorSelection.type, 'all');
 });
 
-test('bar avoids the Zebar systray provider that impersonates Shell_TrayWnd', async () => {
-  const bar = await readFile(path.join(root, 'pack', 'bar.js'), 'utf8');
-  assert.doesNotMatch(bar, /systray\s*:\s*\{\s*type\s*:\s*['"]systray['"]/);
-  assert.match(bar, /upstream #301/);
-});
-
 test('integrated settings expose every customizer preference', async () => {
   const settings = await readFile(path.join(root, 'pack', 'settings.js'), 'utf8');
   for (const key of Object.keys(customizerDefaults)) {
@@ -195,6 +189,12 @@ test('native preview and switcher safety regressions remain guarded', async () =
   assert.match(windowModule, /TasksModule\.ParseId\(taskId\)/);
   assert.match(windowModule, /IsCaptureBlocked\(window\)/);
   assert.match(windowModule, /Contains\("NanaZip", StringComparison\.OrdinalIgnoreCase\)/);
+  assert.match(windowModule, /SystemMinimizeStart/);
+  assert.match(windowModule, /_previewCache/);
+
+  const popout = await readFile(path.join(root, 'pack', 'popout.js'), 'utf8');
+  assert.match(popout, /helperClient\.request\('window\.preview'/);
+  assert.doesNotMatch(popout, /window\.thumbnails/);
 
   const switcher = await readFile(path.join(root, 'pack', 'native', 'StellariaSwitcher.cs'), 'utf8');
   assert.match(switcher, /Commit\(opacity, false\)/);

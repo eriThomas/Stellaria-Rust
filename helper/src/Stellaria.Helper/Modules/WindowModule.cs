@@ -11,11 +11,29 @@ internal sealed class WindowModule : IHelperModule
 {
     public const int PreviewWidth = 640;
     public const uint PrintFullContent = 2;
+    private const int MaxCachedPreviews = 64;
+    private readonly WindowPreviewCache _previewCache = new(MaxCachedPreviews);
 
     public string Name => "window";
 
     public Task StartAsync(ModuleContext context)
     {
+        context.Loop.WinEvent += (eventType, hwnd, objectId, childId) =>
+        {
+            if (eventType != WinEvents.SystemMinimizeStart || hwnd == 0 ||
+                !DesktopEventHooks.IsWindowEvent(objectId, childId))
+            {
+                return;
+            }
+
+            // Capture before the minimize animation finishes. Once a window is iconic,
+            // PrintWindow commonly returns an empty surface or an application logo.
+            var capture = Capture(hwnd);
+            if (capture is not null)
+            {
+                _ = CacheAsync(hwnd, capture, context.Shutdown);
+            }
+        };
         context.Router.Register("window.act", async (request, _) =>
         {
             var action = request.RequireString("action");
@@ -32,8 +50,21 @@ internal sealed class WindowModule : IHelperModule
             var window = request.Params["id"] is JsonValue id && id.TryGetValue<string>(out var taskId)
                 ? TasksModule.ParseId(taskId)
                 : context.Foreground.LastUserWindow;
+            if (User32.IsIconic(window))
+            {
+                return new JsonObject
+                {
+                    ["image"] = _previewCache.TryGet(window, out var cached) ? cached : null,
+                    ["cached"] = true,
+                };
+            }
+
             var capture = await context.Loop.InvokeAsync(() => Capture(window)).ConfigureAwait(false);
             var image = capture is null ? null : Convert.ToBase64String(await ImageCodec.EncodeJpegAsync(capture, PreviewWidth).ConfigureAwait(false));
+            if (image is not null)
+            {
+                Store(window, image);
+            }
             return new JsonObject { ["image"] = image };
         });
         context.Router.Register("capture.record", async (_, _) =>
@@ -60,6 +91,24 @@ internal sealed class WindowModule : IHelperModule
             return Task.FromResult<JsonNode?>(null);
         });
         return Task.CompletedTask;
+    }
+
+    private async Task CacheAsync(nint window, PixelImage capture, CancellationToken cancellation)
+    {
+        try
+        {
+            var image = Convert.ToBase64String(await ImageCodec.EncodeJpegAsync(capture, PreviewWidth).ConfigureAwait(false));
+            cancellation.ThrowIfCancellationRequested();
+            Store(window, image);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private void Store(nint window, string image)
+    {
+        _previewCache.Store(window, image);
     }
 
     public static bool Act(nint window, string action)
@@ -96,7 +145,8 @@ internal sealed class WindowModule : IHelperModule
 
     private static PixelImage? Capture(nint window)
     {
-        if (window == 0 || !User32.IsWindow(window) || User32.IsIconic(window) || !User32.GetWindowRect(window, out var bounds) || bounds.IsEmpty)
+        if (window == 0 || !User32.IsWindow(window) || User32.IsIconic(window) || User32.IsHungAppWindow(window) ||
+            !User32.GetWindowRect(window, out var bounds) || bounds.IsEmpty)
         {
             return null;
         }
@@ -132,4 +182,5 @@ internal sealed class WindowModule : IHelperModule
             return false;
         }
     }
+
 }

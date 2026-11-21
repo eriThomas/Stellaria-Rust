@@ -24,6 +24,7 @@ internal sealed class HealthModule : IHelperModule
             return Task.FromResult<JsonNode?>(null);
         });
         _watchdog = new ZebarWatchdog(context.Log, context.Desktop.Processes);
+        RepairZebarWindows(context);
         _check = new Timer(_ => Check(context), null, CheckInterval, CheckInterval);
         context.Shutdown.Register(() => _check.Dispose());
         return Task.CompletedTask;
@@ -35,6 +36,7 @@ internal sealed class HealthModule : IHelperModule
     private void Check(ModuleContext context)
     {
         var now = context.Time.GetUtcNow();
+        RepairZebarWindows(context);
         _watchdog?.Check(now);
         var sessions = context.Hub.Sessions;
         lock (_stalled)
@@ -52,6 +54,15 @@ internal sealed class HealthModule : IHelperModule
                     context.Log.Info("health", $"{session.Describe()} is rendering again.");
                 }
             }
+        }
+    }
+
+    private static void RepairZebarWindows(ModuleContext context)
+    {
+        var repaired = ZebarWindowStyles.Repair(context.Desktop.Processes);
+        if (repaired > 0)
+        {
+            context.Log.Info("health", $"Removed {repaired} internal Zebar window(s) from the Windows task switcher.");
         }
     }
 }
