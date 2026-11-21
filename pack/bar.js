@@ -147,7 +147,9 @@ const providers = zebar.createProviderGroup({
   audio: { type: 'audio' },
   network: { type: 'network', refreshInterval: 5000 },
   keyboard: { type: 'keyboard', refreshInterval: 1000 },
-  systray: { type: 'systray' },
+  // Zebar 3.3.1's systray provider creates a fake Shell_TrayWnd and breaks
+  // Windows ITaskbarList clients such as Squirrel installers (upstream #301).
+  // Keep it disabled until Zebar fixes the window-class collision.
   media: { type: 'media' },
 });
 

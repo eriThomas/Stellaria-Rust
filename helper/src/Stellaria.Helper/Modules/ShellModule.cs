@@ -166,8 +166,22 @@ internal sealed class ShellModule(HelperState state) : IHelperModule
 
             if (!AppBarRules.TouchesItsEdge(dock, info.Monitor))
             {
-                pushedZebar = User32.ProcessId(hwnd);
-                continue;
+                var corrected = AppBarRules.SnapToEdge(dock, info.Monitor);
+                if (!User32.SetWindowPos(
+                        hwnd,
+                        0,
+                        corrected.Left,
+                        corrected.Top,
+                        corrected.Width,
+                        corrected.Height,
+                        User32.SwpNoZOrder | User32.SwpNoActivate))
+                {
+                    pushedZebar = User32.ProcessId(hwnd);
+                    continue;
+                }
+
+                dock = dock with { Bounds = corrected };
+                _context.Log.Info("shell", $"Moved a displaced Stellaria dock back to the {dock.Edge.ToString().ToLowerInvariant()} edge.");
             }
 
             var data = new AppBarData { Size = sizeof(AppBarData), Hwnd = hwnd, Edge = (uint)dock.Edge, Rect = dock.Bounds };

@@ -43,6 +43,14 @@ internal static class AppBarRules
         _ => dock.Bounds.Bottom == monitor.Bottom,
     };
 
+    public static Rect SnapToEdge(Dock dock, Rect monitor) => dock.Edge switch
+    {
+        DockEdge.Left => new Rect(monitor.Left, monitor.Top, monitor.Left + dock.Thickness, monitor.Bottom),
+        DockEdge.Top => new Rect(monitor.Left, monitor.Top, monitor.Right, monitor.Top + dock.Thickness),
+        DockEdge.Right => new Rect(monitor.Right - dock.Thickness, monitor.Top, monitor.Right, monitor.Bottom),
+        _ => new Rect(monitor.Left, monitor.Bottom - dock.Thickness, monitor.Right, monitor.Bottom),
+    };
+
     public static bool IsReserved(Dock dock, Rect work) => dock.Edge switch
     {
         DockEdge.Left => work.Left >= dock.Bounds.Right,

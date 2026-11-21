@@ -54,6 +54,26 @@ public sealed class AppBarRulesTests
         Assert.False(AppBarRules.TouchesItsEdge(pushed, side));
     }
 
+    [Fact]
+    public void A_pushed_left_dock_on_a_negative_monitor_is_snapped_to_the_physical_edge()
+    {
+        var monitor = new Rect(-2560, 3, 0, 1443);
+        var pushed = AppBarRules.Classify(1, new Rect(-2512, 4, -2464, 1444), monitor)!;
+
+        Assert.Equal(new Rect(-2560, 3, -2512, 1443), AppBarRules.SnapToEdge(pushed, monitor));
+    }
+
+    [Theory]
+    [InlineData(1, 0, 0, 3440, 48)]
+    [InlineData(2, 3392, 0, 3440, 1440)]
+    [InlineData(3, 0, 1392, 3440, 1440)]
+    public void Snapping_also_covers_the_other_edges(int edge, int left, int top, int right, int bottom)
+    {
+        var dock = new Dock(1, new Rect(100, 100, 148, 148), (DockEdge)edge, 48);
+
+        Assert.Equal(new Rect(left, top, right, bottom), AppBarRules.SnapToEdge(dock, s_monitor));
+    }
+
     [Theory]
     [InlineData("Zebar - stellaria / bar", true)]
     [InlineData("Zebar - stellaria / edge", true)]

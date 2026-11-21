@@ -17,6 +17,8 @@ internal static unsafe partial class User32
     public const int SwMinimize = 6;
     public const int SwMaximize = 3;
     public const int SwRestore = 9;
+    public const uint SwpNoZOrder = 0x0004;
+    public const uint SwpNoActivate = 0x0010;
     public const uint WmClose = 0x0010;
     public const uint WmQueryEndSession = 0x0011;
     public const uint WmEndSession = 0x0016;
@@ -61,6 +63,10 @@ internal static unsafe partial class User32
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool GetWindowRect(nint hwnd, out Rect rect);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool SetWindowPos(nint hwnd, nint insertAfter, int x, int y, int width, int height, uint flags);
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

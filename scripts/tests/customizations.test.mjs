@@ -174,6 +174,12 @@ test('bar and popout bypass stale WebView caching without disabling other widget
   assert.equal(widgets.bar.presets[0].monitorSelection.type, 'all');
 });
 
+test('bar avoids the Zebar systray provider that impersonates Shell_TrayWnd', async () => {
+  const bar = await readFile(path.join(root, 'pack', 'bar.js'), 'utf8');
+  assert.doesNotMatch(bar, /systray\s*:\s*\{\s*type\s*:\s*['"]systray['"]/);
+  assert.match(bar, /upstream #301/);
+});
+
 test('integrated settings expose every customizer preference', async () => {
   const settings = await readFile(path.join(root, 'pack', 'settings.js'), 'utf8');
   for (const key of Object.keys(customizerDefaults)) {
