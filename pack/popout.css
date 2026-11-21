@@ -67,6 +67,15 @@ body.open .drawer * {
   text-overflow: ellipsis;
 }
 
+.task-menu-view {
+  min-width: 250px;
+}
+
+.task-menu-danger,
+.task-menu-danger .icon {
+  color: var(--m3-error);
+}
+
 .view-value {
   font-size: 14px;
   font-weight: 600;

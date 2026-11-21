@@ -449,8 +449,40 @@ store.watch(keys.focus, renderFocus, 300);
 option('showActiveWindow', false, value => { nodes.activeWindow.hidden = !value; });
 
 /* STELLARIA CUSTOMIZER TASK GROUPING START */
+let taskMenuOpen = false;
+
 function taskGroupKey(task) {
   return String(task.exe || task.process || task.id || '').toLowerCase();
+}
+
+function normalizedAppToken(value) {
+  return String(value || '')
+    .replace(/\.exe$/i, '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/gi, '')
+    .toLowerCase();
+}
+
+function matchingStartApp(task) {
+  const apps = store.get(keys.apps)?.items ?? [];
+  const exe = String(task.exe || '').toLowerCase();
+  const process = normalizedAppToken(task.process);
+  const executable = normalizedAppToken(String(task.exe || '').split(/[\\/]/).pop());
+  let best = null;
+  let bestScore = 0;
+  for (const app of apps) {
+    const id = String(app.id || '').toLowerCase();
+    const name = normalizedAppToken(app.name);
+    let score = id === exe && exe ? 120 : 0;
+    if (name && (name === process || name === executable)) score = Math.max(score, 100);
+    else if (name && ((process && process.includes(name)) || (executable && executable.includes(name)))) score = Math.max(score, 70);
+    if (score > bestScore) {
+      best = app;
+      bestScore = score;
+    }
+  }
+  return best;
 }
 
 function groupTasks(tasks) {
@@ -469,7 +501,45 @@ function activateTaskWithoutMinimizing(task) {
   return actions.activateTask(task.id);
 }
 
+function pinFromTask(task, icons) {
+  const app = matchingStartApp(task);
+  return {
+    key: taskGroupKey(task),
+    title: task.process || task.title || t('Application'),
+    process: task.process || '',
+    exe: task.exe || '',
+    appId: app?.id || task.exe || null,
+    icon: icons[task.icon || task.exe] || null,
+  };
+}
+
+function mergePinnedGroups(groups) {
+  const remaining = new Map(groups.map(group => [group.key, group]));
+  const result = [];
+  for (const pin of store.get(keys.pinnedTasks, []) ?? []) {
+    if (!pin?.key) continue;
+    const group = remaining.get(pin.key) ?? { key: pin.key, tasks: [] };
+    group.pin = pin;
+    remaining.delete(pin.key);
+    result.push(group);
+  }
+  return result.concat([...remaining.values()]);
+}
+
+async function launchPinnedTask(pin) {
+  if (pin?.appId) {
+    try {
+      await helperClient.request('apps.launch', { id: pin.appId });
+      return;
+    } catch (error) {
+      console.warn('[stellaria] Unable to launch pinned task directly', error);
+    }
+  }
+  await openLauncher(pin?.process || pin?.title || '', monitor);
+}
+
 function openTaskGroup(group, node) {
+  if (taskMenuOpen) return;
   const rect = node.getBoundingClientRect();
   requestPopout(monitor, {
     kind: 'taskGroup',
@@ -481,19 +551,43 @@ function openTaskGroup(group, node) {
   });
 }
 
+function openTaskMenu(group, node, icons) {
+  const task = group.tasks.find(item => item.active) ?? group.tasks[0];
+  const pin = group.pin ?? (task ? pinFromTask(task, icons) : null);
+  if (!pin) return;
+  taskMenuOpen = true;
+  const rect = node.getBoundingClientRect();
+  requestPopout(monitor, {
+    kind: 'taskMenu',
+    open: true,
+    pin,
+    pinned: Boolean(group.pin),
+    tasks: group.tasks,
+    top: window.screenY + rect.top,
+    bottom: window.screenY + rect.bottom,
+    at: Date.now(),
+  });
+}
+
 function taskGroupButton(group, icons) {
   const task = group.tasks.find(item => item.active) ?? group.tasks[0];
-  const iconData = icons[task.icon || task.exe];
+  const iconData = (task ? icons[task.icon || task.exe] : null) || group.pin?.icon;
   const count = group.tasks.length;
+  const title = task?.process || task?.title || group.pin?.title || t('Application');
   const node = element('button', {
-    class: ['task', 'state-layer', count > 1 ? 'grouped' : '', group.tasks.some(item => item.active) ? 'active' : '', group.tasks.every(item => item.minimized) ? 'minimized' : ''].join(' ').trim(),
-    title: count > 1 ? `${task.process || task.title} · ${count}` : task.title,
-    onClick: () => count === 1 ? activateTaskWithoutMinimizing(task) : openTaskGroup(group, node),
+    class: ['task', 'state-layer', group.pin ? 'pinned' : '', count > 1 ? 'grouped' : '', group.tasks.some(item => item.active) ? 'active' : '', count > 0 && group.tasks.every(item => item.minimized) ? 'minimized' : ''].join(' ').trim(),
+    title: count > 1 ? `${title} · ${count}` : (task?.title || title),
+    onClick: () => count === 0 ? launchPinnedTask(group.pin) : count === 1 ? activateTaskWithoutMinimizing(task) : openTaskGroup(group, node),
+    onContextmenu: event => {
+      event.preventDefault();
+      event.stopPropagation();
+      openTaskMenu(group, node, icons);
+    },
     onAuxClick: event => {
-      if (event.button === 1) actions.closeTask(task.id);
+      if (event.button === 1 && task) actions.closeTask(task.id);
     },
     onMouseEnter: () => {
-      if (getOption('taskPreviews', true) && getOption('hoverPopouts', true)) openTaskGroup(group, node);
+      if (count > 0 && getOption('taskPreviews', true) && getOption('hoverPopouts', true)) openTaskGroup(group, node);
     },
   }, [
     iconData ? element('img', { src: `data:image/png;base64,${iconData}`, alt: '' }) : icon('select_window'),
@@ -506,13 +600,17 @@ function renderTasks() {
   const allTasks = store.get(keys.tasks, []) ?? [];
   const tasks = getOption('showTasksFromAllMonitors', true) ? allTasks : allTasks.filter(task => task.monitor === monitor);
   const icons = store.get(keys.taskIcons, {}) ?? {};
-  const groups = groupTasks(tasks);
+  const groups = mergePinnedGroups(groupTasks(tasks));
   nodes.tasks.hidden = groups.length === 0;
   nodes.tasks.replaceChildren(...groups.map(group => taskGroupButton(group, icons)));
 }
 
 renderTasks();
 store.watch(keys.tasks, renderTasks, 150);
+store.watch(keys.pinnedTasks, renderTasks, 150);
+store.watch(keys.popout(monitor), request => {
+  taskMenuOpen = request?.kind === 'taskMenu' && request?.open === true;
+}, 150);
 for (const name of ['showTasksFromAllMonitors', 'groupTasks', 'taskPreviews', 'minimizeActiveTaskOnClick']) {
   option(name, name !== 'minimizeActiveTaskOnClick', renderTasks);
 }

@@ -30,7 +30,7 @@
         "assets/**/*"
       ],
       "caching": {
-        "defaultDuration": 604800,
+        "defaultDuration": 0,
         "rules": []
       },
       "privileges": {
@@ -326,7 +326,7 @@
         "assets/**/*"
       ],
       "caching": {
-        "defaultDuration": 604800,
+        "defaultDuration": 0,
         "rules": []
       },
       "privileges": {

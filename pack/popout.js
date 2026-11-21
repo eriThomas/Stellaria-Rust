@@ -538,6 +538,49 @@ function createNotificationsView() {
   };
 }
 
+function createTaskMenuView() {
+  const title = element('span', { class: 'view-title' });
+  const pinButton = element('button', { class: 'option' });
+  const closeAllButton = element('button', {
+    class: 'option task-menu-danger',
+    onClick: async () => {
+      const tasks = state.request?.tasks ?? [];
+      await Promise.all(tasks.map(task => actions.closeTask(task.id)));
+      close();
+    },
+  });
+  const node = element('div', { class: 'view task-menu-view' }, [
+    element('div', { class: 'view-header' }, [icon('apps'), title]),
+    pinButton,
+    closeAllButton,
+  ]);
+
+  const render = () => {
+    const request = state.request;
+    if (request?.kind !== 'taskMenu') return;
+    title.textContent = request.pin?.title || t('Application');
+    pinButton.replaceChildren(
+      icon(request.pinned ? 'keep_off' : 'keep'),
+      element('span', { text: t(request.pinned ? 'Détacher de la barre' : 'Épingler à la barre') }),
+    );
+    pinButton.onclick = () => {
+      const pins = store.get(keys.pinnedTasks, []) ?? [];
+      const next = request.pinned
+        ? pins.filter(pin => pin.key !== request.pin.key)
+        : [...pins.filter(pin => pin.key !== request.pin.key), request.pin];
+      store.set(keys.pinnedTasks, next);
+      close();
+    };
+    const count = request.tasks?.length ?? 0;
+    closeAllButton.hidden = count === 0;
+    closeAllButton.replaceChildren(
+      icon('close'),
+      element('span', { text: t('Fermer toutes les fenêtres') }),
+    );
+  };
+  return { node, update: render, onShow: render };
+}
+
 /* STELLARIA CUSTOMIZER TASK PREVIEW START */
 function isTaskPreviewBlocked(task) {
   return `${task.process ?? ''} ${task.exe ?? ''}`.toLowerCase().includes('nanazip');
@@ -620,6 +663,7 @@ function createTaskGroupView() {
 /* STELLARIA CUSTOMIZER TASK PREVIEW END */
 
 const views = {
+  taskMenu: createTaskMenuView(),
   taskGroup: createTaskGroupView(),
   audio: createAudioView(),
   network: createNetworkView(),

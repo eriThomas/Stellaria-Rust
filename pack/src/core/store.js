@@ -70,6 +70,7 @@ export const keys = {
   focus: 'stellaria:focus',
   tasks: 'stellaria:tasks',
   taskIcons: 'stellaria:task-icons',
+  pinnedTasks: 'stellaria:pinned-tasks',
   event: type => `stellaria:event:${type}`,
   popout: monitor => `stellaria:popout:${monitor}`,
   dashboardWidth: 'stellaria:dashboard:width',
