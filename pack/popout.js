@@ -24,6 +24,7 @@ import {
   pendingRequest,
   letClicksThrough,
 } from './common.js';
+import { isTaskPreviewBlocked } from './src/core/taskbar-model.js';
 
 letClicksThrough();
 
@@ -582,10 +583,6 @@ function createTaskMenuView() {
 }
 
 /* STELLARIA CUSTOMIZER TASK PREVIEW START */
-function isTaskPreviewBlocked(task) {
-  return `${task.process ?? ''} ${task.exe ?? ''}`.toLowerCase().includes('nanazip');
-}
-
 function createTaskGroupView() {
   const title = element('span', { class: 'view-title', text: t('Fenêtres') });
   const grid = element('div', { class: 'task-group-grid' });

@@ -2,8 +2,8 @@ import * as zebar from '../../vendor/zebar.mjs';
 import { currentMonitorName, cursorPosition, hideOnFullscreen, layout, tauriInvoke } from './monitor.js';
 import { keys, store } from './store.js';
 import { actions } from './helper.js';
+import { canEnsurePanel, canSpawnPanel, panelSpawnKey, waitForMatchingPong } from './panel-policy.js';
 
-const lazyPanels = new Set(['dashboard', 'utilities', 'popout']);
 const pendingWindow = 5000;
 const spawnedAt = new Map();
 let packManifest = null;
@@ -30,15 +30,13 @@ async function presetFor(name) {
 }
 
 async function ensurePanel(name, monitor) {
-  if (!lazyPanels.has(name) || !monitor) return;
+  if (!canEnsurePanel(name, monitor)) return;
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   store.set(panelKey(name, monitor, 'ping'), { id, at: Date.now() });
-  for (let waited = 0; waited < 1000; waited += 25) {
-    await new Promise(resolve => setTimeout(resolve, 25));
-    if (store.get(panelKey(name, monitor, 'pong')) === id) return;
-  }
-  const key = `${name}:${monitor}`;
-  if (Date.now() - (spawnedAt.get(key) ?? 0) < 10000) return;
+  const alive = await waitForMatchingPong(() => store.get(panelKey(name, monitor, 'pong')), id);
+  if (alive) return;
+  const key = panelSpawnKey(name, monitor);
+  if (!canSpawnPanel(spawnedAt.get(key))) return;
   spawnedAt.set(key, Date.now());
   await zebar.startWidget(name, { ...(await presetFor(name)), monitorSelection: { type: 'name', match: monitor } });
 }

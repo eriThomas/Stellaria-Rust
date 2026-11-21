@@ -20,6 +20,7 @@ import {
   toast,
   variants,
 } from './common.js';
+import { customizerDefaults } from './src/core/customizer.js';
 
 initTheme();
 
@@ -507,16 +508,6 @@ function aboutPage() {
 }
 
 /* STELLARIA CUSTOMIZER SETTINGS PAGE START */
-const customizerDefaults = Object.freeze({
-  borderSize: 0,
-  showActiveWindow: false,
-  showTasksFromAllMonitors: true,
-  launcherWinKey: false,
-  groupTasks: true,
-  taskPreviews: true,
-  minimizeActiveTaskOnClick: false,
-});
-
 function customizerConfig() {
   return Object.fromEntries(Object.entries(customizerDefaults).map(([key, fallback]) => [key, getOption(key, fallback)]));
 }

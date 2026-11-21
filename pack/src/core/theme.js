@@ -17,6 +17,7 @@ import {
 } from '../../vendor/material-color-utilities.mjs';
 import { getOption, keys, option, setOption, settings, store } from './store.js';
 import { t, translateDocument } from './i18n.js';
+import { clampBorderSize } from './customizer.js';
 
 export const variants = {
   tonalspot: { label: 'Tonal Spot', scheme: SchemeTonalSpot },
@@ -129,7 +130,7 @@ export function initTheme() {
   if (getOption('transparency', false)) setOption('transparency', false);
   option('gameMode', false, enabled => document.documentElement.classList.toggle('game-mode', Boolean(enabled)));
   option('borderSize', 0, value => {
-    const size = Math.max(0, Math.min(40, Number(value) || 0));
+    const size = clampBorderSize(value);
     document.documentElement.style.setProperty('--border', `${size}px`);
     document.documentElement.classList.toggle('borderless', size === 0);
   });

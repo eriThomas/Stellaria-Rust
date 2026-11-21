@@ -35,6 +35,14 @@ import {
   zebar,
   requestPopout,
 } from './common.js';
+import {
+  createTaskPin,
+  filterTasksForMonitor,
+  groupTasks,
+  isTaskPopoutKind,
+  mergePinnedGroups,
+  shouldResetTaskPopout,
+} from './src/core/taskbar-model.js';
 
 initTheme();
 hideOnFullscreen();
@@ -451,12 +459,11 @@ option('showActiveWindow', false, value => { nodes.activeWindow.hidden = !value;
 /* STELLARIA CUSTOMIZER TASK GROUPING START */
 let taskMenuOpen = false;
 let lastIdleSeconds = 0;
-const taskPopoutKinds = new Set(['taskGroup', 'taskMenu']);
 
 function resetTaskPopoutState() {
   taskMenuOpen = false;
   const request = store.get(keys.popout(monitor));
-  if (request?.open && taskPopoutKinds.has(request.kind)) {
+  if (request?.open && isTaskPopoutKind(request.kind)) {
     store.set(keys.popout(monitor), { ...request, open: false, at: Date.now() });
   }
 }
@@ -466,79 +473,13 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) resetTaskPopoutState();
 });
 
-function taskGroupKey(task) {
-  return String(task.exe || task.process || task.id || '').toLowerCase();
-}
-
-function normalizedAppToken(value) {
-  return String(value || '')
-    .replace(/\.exe$/i, '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]/gi, '')
-    .toLowerCase();
-}
-
-function matchingStartApp(task) {
-  const apps = store.get(keys.apps)?.items ?? [];
-  const exe = String(task.exe || '').toLowerCase();
-  const process = normalizedAppToken(task.process);
-  const executable = normalizedAppToken(String(task.exe || '').split(/[\\/]/).pop());
-  let best = null;
-  let bestScore = 0;
-  for (const app of apps) {
-    const id = String(app.id || '').toLowerCase();
-    const name = normalizedAppToken(app.name);
-    let score = id === exe && exe ? 120 : 0;
-    if (name && (name === process || name === executable)) score = Math.max(score, 100);
-    else if (name && ((process && process.includes(name)) || (executable && executable.includes(name)))) score = Math.max(score, 70);
-    if (score > bestScore) {
-      best = app;
-      bestScore = score;
-    }
-  }
-  return best;
-}
-
-function groupTasks(tasks) {
-  if (!getOption('groupTasks', true)) return tasks.map(task => ({ key: String(task.id), tasks: [task] }));
-  const grouped = new Map();
-  for (const task of tasks) {
-    const key = taskGroupKey(task);
-    if (!grouped.has(key)) grouped.set(key, { key, tasks: [] });
-    grouped.get(key).tasks.push(task);
-  }
-  return [...grouped.values()];
-}
-
 function activateTaskWithoutMinimizing(task) {
   if (task?.active && !getOption('minimizeActiveTaskOnClick', false)) return Promise.resolve();
   return actions.activateTask(task.id);
 }
 
 function pinFromTask(task, icons) {
-  const app = matchingStartApp(task);
-  return {
-    key: taskGroupKey(task),
-    title: task.process || task.title || t('Application'),
-    process: task.process || '',
-    exe: task.exe || '',
-    appId: app?.id || task.exe || null,
-    icon: icons[task.icon || task.exe] || null,
-  };
-}
-
-function mergePinnedGroups(groups) {
-  const remaining = new Map(groups.map(group => [group.key, group]));
-  const result = [];
-  for (const pin of store.get(keys.pinnedTasks, []) ?? []) {
-    if (!pin?.key) continue;
-    const group = remaining.get(pin.key) ?? { key: pin.key, tasks: [] };
-    group.pin = pin;
-    remaining.delete(pin.key);
-    result.push(group);
-  }
-  return result.concat([...remaining.values()]);
+  return createTaskPin(task, icons, store.get(keys.apps)?.items ?? [], t('Application'));
 }
 
 async function launchPinnedTask(pin) {
@@ -613,9 +554,12 @@ function taskGroupButton(group, icons) {
 
 function renderTasks() {
   const allTasks = store.get(keys.tasks, []) ?? [];
-  const tasks = getOption('showTasksFromAllMonitors', true) ? allTasks : allTasks.filter(task => task.monitor === monitor);
+  const tasks = filterTasksForMonitor(allTasks, monitor, getOption('showTasksFromAllMonitors', true));
   const icons = store.get(keys.taskIcons, {}) ?? {};
-  const groups = mergePinnedGroups(groupTasks(tasks));
+  const groups = mergePinnedGroups(
+    groupTasks(tasks, getOption('groupTasks', true)),
+    store.get(keys.pinnedTasks, []) ?? [],
+  );
   nodes.tasks.hidden = groups.length === 0;
   nodes.tasks.replaceChildren(...groups.map(group => taskGroupButton(group, icons)));
 }
@@ -692,9 +636,7 @@ function relayHelperState() {
     const seconds = idle?.seconds ?? 0;
     store.set(keys.idle, { seconds, at: Date.now() });
     const threshold = Math.max(1, Number(getOption('idleMinutes', 10)) || 10) * 60 - 15;
-    const enteredIdle = lastIdleSeconds < threshold && seconds >= threshold;
-    const resumedFromIdle = lastIdleSeconds >= threshold && seconds < 5;
-    if (enteredIdle || resumedFromIdle) resetTaskPopoutState();
+    if (shouldResetTaskPopout(lastIdleSeconds, seconds, threshold)) resetTaskPopoutState();
     lastIdleSeconds = seconds;
     const running = Date.now() - store.get('stellaria:idle:running', 0) < 3000;
     if (getOption('idleScreen', true) && seconds >= threshold && !running) {
