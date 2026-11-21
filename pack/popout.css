@@ -635,6 +635,12 @@ body.open .drawer * {
   animation: page-in var(--duration-effects-slow) var(--ease-effects);
 }
 
+.task-preview-frame img.task-preview-fallback-icon {
+  width: 52px;
+  height: 52px;
+  object-fit: contain;
+}
+
 .task-preview-frame .icon {
   font-size: 30px;
   animation: pulse 1.2s var(--ease-standard) infinite;

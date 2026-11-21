@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Stellaria.Helper.Desktop;
 using Stellaria.Helper.Imaging;
@@ -100,8 +101,35 @@ internal sealed class WindowModule : IHelperModule
             return null;
         }
 
+        // NanaZip's modern window crashes inside NanaZip.Modern.dll when another
+        // process forces a PW_RENDERFULLCONTENT capture. Keep the task available,
+        // but let the UI fall back to its application icon instead of PrintWindow.
+        if (IsCaptureBlocked(window))
+        {
+            return null;
+        }
+
         var frame = Dwmapi.FrameBounds(window) ?? bounds;
         return WindowCapture.PrintRegion(window, bounds.Width, bounds.Height, PrintFullContent,
             frame.Left - bounds.Left, frame.Top - bounds.Top, frame.Width, frame.Height, PreviewWidth);
+    }
+
+    private static bool IsCaptureBlocked(nint window)
+    {
+        try
+        {
+            var processId = User32.ProcessId(window);
+            if (processId == 0)
+            {
+                return false;
+            }
+
+            using var process = Process.GetProcessById((int)processId);
+            return process.ProcessName.Contains("NanaZip", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

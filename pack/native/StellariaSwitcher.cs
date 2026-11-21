@@ -639,7 +639,10 @@ sealed class SwitcherWindow : NativeWindow, IDisposable
         if (!Visible || index == selected) { selected = index; return; }
         selected = index;
         Render();
-        Commit(opacity);
+        // Selection changes only alter the layered surface. Existing DWM thumbnails
+        // keep the same bounds and opacity, so updating every thumbnail here causes
+        // needless compositor work on every Tab press.
+        Commit(opacity, false);
     }
 
     public void Hide()
@@ -653,14 +656,14 @@ sealed class SwitcherWindow : NativeWindow, IDisposable
 
     void StepFade()
     {
-        double t = Math.Min(1, (DateTime.UtcNow - fadeStart).TotalMilliseconds / 150.0);
+        double t = Math.Min(1, (DateTime.UtcNow - fadeStart).TotalMilliseconds / 80.0);
         double eased = 1 - Math.Pow(1 - t, 3);
         byte alpha = (byte)Math.Round(eased * 255);
         Commit(alpha);
         if (t >= 1) fade.Stop();
     }
 
-    void Commit(byte alpha)
+    void Commit(byte alpha, bool updateThumbnails = true)
     {
         opacity = alpha;
         if (memoryDc == IntPtr.Zero) return;
@@ -674,7 +677,8 @@ sealed class SwitcherWindow : NativeWindow, IDisposable
             Native.UpdateLayeredWindow(Handle, screen, ref position, ref extent, memoryDc, ref source, 0, ref blend, 2);
         }
         finally { Native.ReleaseDC(IntPtr.Zero, screen); }
-        foreach (var tile in tiles) UpdateThumbnail(tile, alpha);
+        if (updateThumbnails)
+            foreach (var tile in tiles) UpdateThumbnail(tile, alpha);
     }
 
     void ReleaseSurface()
@@ -830,6 +834,9 @@ sealed class SwitcherWindow : NativeWindow, IDisposable
             case 0x8001:
                 owner.ExitThread();
                 return;
+            case 0x8002:
+                owner.InitializeBegin();
+                return;
         }
         base.WndProc(ref m);
     }
@@ -850,9 +857,10 @@ sealed class Switcher : ApplicationContext
     readonly Theme theme = new Theme();
     readonly IconCache icons = new IconCache();
     readonly SwitcherWindow window;
-    readonly System.Windows.Forms.Timer reveal = new System.Windows.Forms.Timer { Interval = 90 };
+    readonly System.Windows.Forms.Timer reveal = new System.Windows.Forms.Timer { Interval = 20 };
     readonly System.Windows.Forms.Timer watchdog = new System.Windows.Forms.Timer { Interval = 40 };
     readonly System.Windows.Forms.Timer rehook = new System.Windows.Forms.Timer { Interval = 30000 };
+    readonly System.Windows.Forms.Timer warmup = new System.Windows.Forms.Timer { Interval = 750 };
     readonly RegisteredWaitHandle stopWait;
 
     static readonly IntPtr MaskSignature = new IntPtr(0x43415354);
@@ -862,6 +870,8 @@ sealed class Switcher : ApplicationContext
     List<SwitcherItem> items = new List<SwitcherItem>();
     int selected;
     IntPtr monitor;
+    bool loading;
+    int pendingDirection;
 
     public Switcher(EventWaitHandle stop)
     {
@@ -871,8 +881,14 @@ sealed class Switcher : ApplicationContext
         reveal.Tick += (sender, args) => { reveal.Stop(); if (active) Reveal(); };
         watchdog.Tick += (sender, args) => { if (active && !Native.Pressed(0x12)) Commit(); };
         rehook.Tick += (sender, args) => { if (!active) InstallHook(); };
+        warmup.Tick += (sender, args) =>
+        {
+            warmup.Stop();
+            if (!active) WindowList.Enumerate(icons, Native.Scale(TargetMonitor()));
+        };
         InstallHook();
         rehook.Start();
+        warmup.Start();
         IntPtr target = window.Handle;
         stopWait = ThreadPool.RegisterWaitForSingleObject(stop, (state, timedOut) => Native.PostMessage(target, 0x8001, IntPtr.Zero, IntPtr.Zero), null, Timeout.Infinite, true);
     }
@@ -975,16 +991,35 @@ sealed class Switcher : ApplicationContext
     bool Begin(int direction)
     {
         monitor = TargetMonitor();
+        active = true;
+        loading = true;
+        pendingDirection = direction;
+        Mask();
+        watchdog.Start();
+        Native.PostMessage(window.Handle, 0x8002, IntPtr.Zero, IntPtr.Zero);
+        return true;
+    }
+
+    public void InitializeBegin()
+    {
+        if (!active || !loading) return;
+
         theme.Refresh();
         items = WindowList.Enumerate(icons, Native.Scale(monitor));
-        if (items.Count == 0) return false;
-        active = true;
-        Mask();
+        if (!active) return;
+        if (items.Count == 0)
+        {
+            Finish();
+            return;
+        }
+
+        int direction = pendingDirection;
         int first = items[0].Handle == Native.GetForegroundWindow() && items.Count > 1 ? 1 : 0;
-        selected = direction > 0 ? first : items.Count - 1;
+        selected = direction >= 0 ? first : items.Count - 1;
+        int extraSteps = direction >= 0 ? direction - 1 : direction + 1;
+        selected = ((selected + extraSteps) % items.Count + items.Count) % items.Count;
+        loading = false;
         reveal.Start();
-        watchdog.Start();
-        return true;
     }
 
     void Reveal()
@@ -994,6 +1029,11 @@ sealed class Switcher : ApplicationContext
 
     void Step(int delta)
     {
+        if (loading)
+        {
+            pendingDirection += delta;
+            return;
+        }
         if (items.Count == 0) return;
         selected = ((selected + delta) % items.Count + items.Count) % items.Count;
         if (window.Visible) window.Select(selected);
@@ -1026,6 +1066,8 @@ sealed class Switcher : ApplicationContext
     void Finish()
     {
         active = false;
+        loading = false;
+        pendingDirection = 0;
         reveal.Stop();
         watchdog.Stop();
         window.Hide();
@@ -1053,6 +1095,7 @@ sealed class Switcher : ApplicationContext
         reveal.Dispose();
         watchdog.Dispose();
         rehook.Dispose();
+        warmup.Dispose();
         window.Dispose();
         base.ExitThreadCore();
     }

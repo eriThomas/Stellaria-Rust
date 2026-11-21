@@ -539,6 +539,10 @@ function createNotificationsView() {
 }
 
 /* STELLARIA CUSTOMIZER TASK PREVIEW START */
+function isTaskPreviewBlocked(task) {
+  return `${task.process ?? ''} ${task.exe ?? ''}`.toLowerCase().includes('nanazip');
+}
+
 function createTaskGroupView() {
   const title = element('span', { class: 'view-title', text: t('Fenêtres') });
   const grid = element('div', { class: 'task-group-grid' });
@@ -558,16 +562,25 @@ function createTaskGroupView() {
     const icons = store.get(keys.taskIcons, {}) ?? {};
     grid.replaceChildren(...tasks.map(task => {
       const preview = element('div', { class: 'task-preview-frame' }, icon('hourglass_empty'));
-      helperClient.request('window.preview', { id: task.id })
-        .then(result => {
-          if (!result?.image) throw new Error('Preview unavailable');
-          preview.replaceChildren(element('img', { src: `data:image/jpeg;base64,${result.image}`, alt: '' }));
-        })
-        .catch(() => preview.replaceChildren(icon('visibility_off')));
+      const iconData = icons[task.icon || task.exe];
+      const showIconFallback = () => preview.replaceChildren(
+        iconData
+          ? element('img', { class: 'task-preview-fallback-icon', src: `data:image/png;base64,${iconData}`, alt: '' })
+          : icon('select_window'),
+      );
+      if (isTaskPreviewBlocked(task)) {
+        showIconFallback();
+      } else {
+        helperClient.request('window.preview', { id: task.id })
+          .then(result => {
+            if (!result?.image) throw new Error('Preview unavailable');
+            preview.replaceChildren(element('img', { src: `data:image/jpeg;base64,${result.image}`, alt: '' }));
+          })
+          .catch(showIconFallback);
+      }
 
       const display = String(task.monitor || '').match(/DISPLAY(\d+)/i)?.[1];
       const metadata = [display ? `${t('Écran')} ${display}` : '', task.minimized ? t('Réduite') : ''].filter(Boolean).join(' · ');
-      const iconData = icons[task.icon || task.exe];
       const card = element('article', {
         class: ['task-card', task.active ? 'active' : '', task.minimized ? 'minimized' : ''].join(' ').trim(),
       });
