@@ -27,4 +27,11 @@ public sealed class ZebarWindowStylesTests
         Assert.Equal(0, corrected & User32.WsExAppWindow);
         Assert.NotEqual(0, corrected & User32.WsExNoActivate);
     }
+
+    [Fact]
+    public void Frame_refresh_flags_preserve_widget_geometry()
+    {
+        Assert.NotEqual(0u, ZebarWindowStyles.RefreshFlags & User32.SwpNoSize);
+        Assert.NotEqual(0u, ZebarWindowStyles.RefreshFlags & User32.SwpNoMove);
+    }
 }

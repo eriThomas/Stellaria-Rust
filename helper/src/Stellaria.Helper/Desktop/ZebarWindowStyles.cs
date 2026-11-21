@@ -6,6 +6,8 @@ internal static class ZebarWindowStyles
 {
     public const string WidgetTitlePrefix = "Zebar - stellaria / ";
     public const string WidgetWindowClass = "Tauri Window";
+    public const uint RefreshFlags = User32.SwpNoSize | User32.SwpNoMove | User32.SwpNoZOrder |
+        User32.SwpNoActivate | User32.SwpFrameChanged;
 
     public static bool IsWidget(string processName, string className, string title) =>
         processName.Equals("zebar", StringComparison.OrdinalIgnoreCase) &&
@@ -34,8 +36,7 @@ internal static class ZebarWindowStyles
             }
 
             User32.SetWindowLong(hwnd, User32.GwlExStyle, corrected);
-            User32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
-                User32.SwpNoZOrder | User32.SwpNoActivate | User32.SwpFrameChanged);
+            User32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, RefreshFlags);
             repaired++;
         }
 
