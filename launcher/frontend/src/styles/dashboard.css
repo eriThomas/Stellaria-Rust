@@ -24,6 +24,10 @@ body.open .drawer-panel * {
   transition-duration: 0.01ms !important;
 }
 
+.tab-row {
+  grid-template-columns: repeat(5, 1fr);
+}
+
 .dashboard-settings-trigger {
   position: absolute;
   top: 8px;

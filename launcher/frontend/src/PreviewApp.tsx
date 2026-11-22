@@ -16,6 +16,7 @@ export interface PreviewEntry {
 export interface PreviewPayload {
   group: TaskGroup;
   iconUrl: string | null;
+  mode?: 'preview' | 'context';
 }
 
 export interface PreviewBridge {
@@ -23,6 +24,8 @@ export interface PreviewBridge {
   capturePreview: (hwnd: number, pid: number) => Promise<PreviewEntry>;
   activateWindow: (hwnd: number, pid: number) => Promise<void>;
   closeWindow: (hwnd: number, pid: number) => Promise<void>;
+  togglePin?: (exePath: string, exeName: string, displayName?: string) => Promise<boolean>;
+  launchApp?: (path: string) => Promise<void>;
   hidePreview: () => Promise<void>;
 }
 
@@ -32,6 +35,9 @@ const defaultBridge: PreviewBridge = {
   activateWindow: (hwnd, pid) =>
     invoke<void>('taskbar_activate_window', { hwnd, pid, allowMinimize: false }),
   closeWindow: (hwnd, pid) => invoke<void>('taskbar_close_window', { hwnd, pid }),
+  togglePin: (exePath, exeName, displayName) =>
+    invoke<boolean>('taskbar_toggle_pin', { exePath, exeName, displayName }),
+  launchApp: path => invoke<void>('taskbar_launch_app', { path }),
   hidePreview: () => invoke<void>('preview_hide'),
 };
 
@@ -48,14 +54,16 @@ export function PreviewApp({ bridge = defaultBridge }: { bridge?: PreviewBridge 
         if (!active) return;
         setPayload(next);
         setThumbs({});
-        for (const win of next.group.windows.slice(0, 6)) {
-          bridge
-            .capturePreview(win.hwnd, win.pid)
-            .then(entry => {
-              if (!active) return;
-              setThumbs(prev => ({ ...prev, [win.hwnd]: entry }));
-            })
-            .catch(() => {});
+        if (next.mode !== 'context') {
+          for (const win of next.group.windows.slice(0, 6)) {
+            bridge
+              .capturePreview(win.hwnd, win.pid)
+              .then(entry => {
+                if (!active) return;
+                setThumbs(prev => ({ ...prev, [win.hwnd]: entry }));
+              })
+              .catch(() => {});
+          }
         }
       })
       .then(fn => {
@@ -70,9 +78,91 @@ export function PreviewApp({ bridge = defaultBridge }: { bridge?: PreviewBridge 
     };
   }, [bridge]);
 
-  if (!payload || payload.group.windows.length === 0) {
-    return null;
+  if (!payload) return null;
+
+  if (payload.mode === 'context') {
+    const group = payload.group;
+    const exeName = group.windows[0]?.exeName || group.key;
+    return (
+      <section
+        data-testid="context-popout"
+        onMouseLeave={() => void bridge.hidePreview()}
+        style={{
+          width: '100vw',
+          height: '100vh',
+          padding: 10,
+          boxSizing: 'border-box',
+          background: 'var(--m3-surface-container-high, #2b2930)',
+          border: '1px solid var(--m3-outline-variant, #49454f)',
+          borderRadius: 16,
+          color: 'var(--m3-on-surface, #e6e0e9)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 4px', fontWeight: 600, fontSize: 13 }}>
+          {payload.iconUrl && <img src={payload.iconUrl} alt="" style={{ width: 16, height: 16 }} />}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {group.displayName}
+          </span>
+        </div>
+
+        <button
+          type="button"
+          className="state-layer"
+          onClick={() => {
+            void bridge.togglePin?.(group.exePath, exeName, group.displayName);
+            void bridge.hidePreview();
+          }}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 10, fontSize: 13 }}
+        >
+          <Icon name={group.pinned ? 'keep_off' : 'keep'} />
+          <span>{group.pinned ? 'Unpin from taskbar' : 'Pin to taskbar'}</span>
+        </button>
+
+        {group.exePath && (
+          <button
+            type="button"
+            className="state-layer"
+            onClick={() => {
+              void bridge.launchApp?.(group.exePath);
+              void bridge.hidePreview();
+            }}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 10, fontSize: 13 }}
+          >
+            <Icon name="open_in_new" />
+            <span>Open new window</span>
+          </button>
+        )}
+
+        {group.windowCount > 0 && (
+          <button
+            type="button"
+            className="state-layer"
+            onClick={() => {
+              group.windows.forEach(w => void bridge.closeWindow(w.hwnd, w.pid));
+              void bridge.hidePreview();
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '8px 10px',
+              borderRadius: 10,
+              fontSize: 13,
+              color: 'var(--m3-error, #f2b8b5)',
+            }}
+          >
+            <Icon name="close" />
+            <span>{group.windowCount > 1 ? `Close all (${group.windowCount})` : 'Close window'}</span>
+          </button>
+        )}
+      </section>
+    );
   }
+
+  if (payload.group.windows.length === 0) return null;
 
   return (
     <section
@@ -94,7 +184,7 @@ export function PreviewApp({ bridge = defaultBridge }: { bridge?: PreviewBridge 
       }}
     >
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12 }}>
-        <strong style={{ color: '#d0bcff' }}>{payload.group.displayName}</strong>
+        <strong style={{ color: 'var(--m3-primary, #d0bcff)' }}>{payload.group.displayName}</strong>
         <button
           type="button"
           title="Dismiss"

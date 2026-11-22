@@ -2,7 +2,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useEffect, useState } from 'react';
 import { Icon } from './components/ExpressiveShape';
-import type { MonitorInfo } from './types/ipc';
+import { applyMaterialTheme } from './theme/materialYou';
+import type { DashboardSnapshot, MonitorInfo, WeatherSnapshot } from './types/ipc';
 
 export interface TaskWindow {
   hwnd: number;
@@ -54,7 +55,9 @@ export interface ShellSnapshot {
 
 export interface BarBridge {
   getSnapshot: () => Promise<ShellSnapshot>;
+  getDashboardSnapshot?: () => Promise<DashboardSnapshot>;
   getTaskbarState: () => Promise<TaskbarStatePayload>;
+  getWeather?: () => Promise<WeatherSnapshot | null>;
   onSnapshot: (handler: (snapshot: ShellSnapshot) => void) => Promise<UnlistenFn>;
   onTasks: (handler: (payload: TaskbarStatePayload) => void) => Promise<UnlistenFn>;
   activateWindow: (hwnd: number, pid: number, allowMinimize: boolean) => Promise<void>;
@@ -63,13 +66,20 @@ export interface BarBridge {
   launchApp: (path: string) => Promise<void>;
   toggleLauncher: () => Promise<void>;
   openDashboard: (monitorId: string | null) => Promise<void>;
-  showPreview?: (monitorId: string | null, groupKey: string, anchorY: number) => Promise<void>;
+  showPreview?: (
+    monitorId: string | null,
+    groupKey: string,
+    anchorY: number,
+    mode?: 'preview' | 'context',
+  ) => Promise<void>;
   sessionAction?: (action: 'lock' | 'restoreShell' | 'quit') => Promise<void>;
 }
 
 const defaultBridge: BarBridge = {
   getSnapshot: () => invoke<ShellSnapshot>('shell_get_snapshot'),
+  getDashboardSnapshot: () => invoke<DashboardSnapshot>('dashboard_get_snapshot'),
   getTaskbarState: () => invoke<TaskbarStatePayload>('taskbar_get_state'),
+  getWeather: () => invoke<WeatherSnapshot | null>('dashboard_refresh_weather', { force: false }),
   onSnapshot: handler => listen<ShellSnapshot>('shell://snapshot', event => handler(event.payload)),
   onTasks: handler => listen<TaskbarStatePayload>('shell://tasks', event => handler(event.payload)),
   activateWindow: (hwnd, pid, allowMinimize) =>
@@ -81,8 +91,8 @@ const defaultBridge: BarBridge = {
   toggleLauncher: () => invoke<void>('launcher_toggle'),
   openDashboard: monitorId =>
     invoke<void>('dashboard_set_visibility', { open: true, monitorId, trigger: 'click' }),
-  showPreview: (monitorId, groupKey, anchorY) =>
-    invoke<void>('preview_show', { monitorId, groupKey, anchorY }),
+  showPreview: (monitorId, groupKey, anchorY, mode = 'preview') =>
+    invoke<void>('preview_show', { monitorId, groupKey, anchorY, mode }),
   sessionAction: action => invoke<void>('shell_session_action', { action }),
 };
 
@@ -94,7 +104,7 @@ export interface BarAppProps {
 export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
   const [snapshot, setSnapshot] = useState<ShellSnapshot | null>(null);
   const [taskbar, setTaskbar] = useState<TaskbarStatePayload | null>(null);
-  const [contextGroup, setContextGroup] = useState<TaskGroup | null>(null);
+  const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
@@ -108,9 +118,21 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
 
     bridge.getSnapshot().then(applySnap).catch(() => {});
     bridge
+      .getDashboardSnapshot?.()
+      .then(dash => {
+        if (active) applyMaterialTheme(dash.settings);
+      })
+      .catch(() => {});
+    bridge
       .getTaskbarState()
       .then(data => {
         if (active) setTaskbar(data);
+      })
+      .catch(() => {});
+    bridge
+      .getWeather?.()
+      .then(w => {
+        if (active) setWeather(w);
       })
       .catch(() => {});
 
@@ -139,7 +161,6 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
     snapshot?.monitors.find(m => m.windowLabel === monitorLabel) ?? snapshot?.monitors[0] ?? null;
 
   const handleGroupClick = (group: TaskGroup) => {
-    setContextGroup(null);
     if (group.windowCount === 0 && group.exePath) {
       void bridge.launchApp(group.exePath);
       return;
@@ -150,219 +171,162 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
     }
   };
 
+  const groups = taskbar?.groups ?? [];
+
   return (
-    <aside
-      data-testid="stellaria-bar"
-      onContextMenu={e => e.preventDefault()}
-      style={{
-        width: '100vw',
-        height: '100vh',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '10px 4px',
-        background: 'rgba(18, 17, 22, 0.92)',
-        borderRight: '1px solid rgba(255, 255, 255, 0.08)',
-        color: '#e6e0e9',
-        fontFamily: 'var(--font-sans)',
-        boxSizing: 'border-box',
-        position: 'relative',
-      }}
-    >
-      {/* Top: Start Launcher + Dashboard */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+    <nav className="bar" data-testid="stellaria-bar" onContextMenu={e => e.preventDefault()}>
+      <div className="section start">
         <button
           type="button"
+          className="logo state-layer"
           title="App Launcher"
           onClick={() => void bridge.toggleLauncher()}
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 12,
-            display: 'grid',
-            placeItems: 'center',
-            background: 'rgba(208, 188, 255, 0.14)',
-            color: '#d0bcff',
-          }}
         >
-          <Icon name="apps" filled />
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 5.1 10.1 4.1v6.8H3zM11 4l10-1.4v8.3H11zM3 11.9h7.1v6.9L3 17.8zM11 11.9h10v8.4L11 18.9z" />
+          </svg>
         </button>
+
+        <div className="group workspaces" aria-label="Workspace">
+          <div className="workspace-indicator" style={{ top: 8, height: 22 }} />
+          <div className="workspace focused">
+            <span className="workspace-dot" />
+          </div>
+        </div>
+
+        <div className="group tasks" data-testid="bar-task-list" hidden={groups.length === 0}>
+          {groups.map(group => {
+            const iconUrl = taskbar?.icons[group.key];
+            const allMinimized =
+              group.windowCount > 0 && group.windows.every(w => w.minimized);
+            return (
+              <button
+                key={group.key}
+                type="button"
+                className={`task state-layer${group.active ? ' active' : ''}${allMinimized ? ' minimized' : ''}`}
+                title={`${group.displayName}${group.windowCount > 0 ? ` (${group.windowCount})` : ''}`}
+                onClick={() => handleGroupClick(group)}
+                onMouseEnter={e => {
+                  if (group.windowCount > 0 && bridge.showPreview) {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    void bridge.showPreview(
+                      view?.monitor.id ?? null,
+                      group.key,
+                      rect.top + rect.height / 2,
+                      'preview',
+                    );
+                  }
+                }}
+                onContextMenu={e => {
+                  e.preventDefault();
+                  if (bridge.showPreview) {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    void bridge.showPreview(
+                      view?.monitor.id ?? null,
+                      group.key,
+                      rect.top + rect.height / 2,
+                      'context',
+                    );
+                  }
+                }}
+              >
+                {iconUrl ? <img src={iconUrl} alt="" /> : <Icon name="web_asset" />}
+                {group.windowCount > 1 && (
+                  <span
+                    style={{
+                      position: 'absolute',
+                      top: -2,
+                      right: -2,
+                      minWidth: 14,
+                      height: 14,
+                      padding: '0 3px',
+                      borderRadius: 999,
+                      background: 'var(--m3-primary)',
+                      color: 'var(--m3-on-primary)',
+                      fontSize: 9.5,
+                      fontWeight: 700,
+                      display: 'grid',
+                      placeItems: 'center',
+                    }}
+                  >
+                    {group.windowCount}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="section end">
         <button
           type="button"
-          title="Open Dashboard"
+          className="group weather state-layer"
+          title="Weather"
+          hidden={!weather}
           onClick={() => void bridge.openDashboard(view?.monitor.id ?? null)}
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 12,
-            display: 'grid',
-            placeItems: 'center',
-            background: 'rgba(255, 255, 255, 0.06)',
-            color: '#cac4d0',
-          }}
         >
-          <Icon name="dashboard" />
+          <Icon name={weather?.current.icon ?? 'cloud'} />
+          <span className="weather-temp">
+            {weather ? `${Math.round(weather.current.temperature)}°` : '--°'}
+          </span>
         </button>
-      </div>
 
-      {/* Middle: Grouped + Pinned Tasks */}
-      <div
-        data-testid="bar-task-list"
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: 'auto',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: 6,
-          padding: '8px 0',
-          scrollbarWidth: 'none',
-        }}
-      >
-        {(taskbar?.groups ?? []).map(group => {
-          const iconUrl = taskbar?.icons[group.key];
-          return (
-            <button
-              key={group.key}
-              type="button"
-              title={`${group.displayName}${group.windowCount > 0 ? ` (${group.windowCount})` : ''}`}
-              onClick={() => handleGroupClick(group)}
-              onMouseEnter={e => {
-                if (group.windowCount > 0 && bridge.showPreview) {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  void bridge.showPreview(view?.monitor.id ?? null, group.key, rect.top + rect.height / 2);
-                }
-              }}
-              onContextMenu={e => {
-                e.preventDefault();
-                setContextGroup(curr => (curr?.key === group.key ? null : group));
-              }}
-              style={{
-                width: 38,
-                height: 38,
-                borderRadius: 14,
-                position: 'relative',
-                display: 'grid',
-                placeItems: 'center',
-                background: group.active
-                  ? 'rgba(208, 188, 255, 0.24)'
-                  : group.windowCount > 0
-                    ? 'rgba(255, 255, 255, 0.07)'
-                    : 'transparent',
-                border: group.active ? '1px solid rgba(208, 188, 255, 0.55)' : '1px solid transparent',
-              }}
-            >
-              {iconUrl ? (
-                <img src={iconUrl} alt="" style={{ width: 22, height: 22, objectFit: 'contain' }} />
-              ) : (
-                <Icon name="web_asset" />
-              )}
-              {group.windowCount > 1 && (
-                <span
-                  style={{
-                    position: 'absolute',
-                    top: -2,
-                    right: -2,
-                    minWidth: 15,
-                    height: 15,
-                    padding: '0 3px',
-                    borderRadius: 999,
-                    background: '#d0bcff',
-                    color: '#1e192b',
-                    fontSize: 10,
-                    fontWeight: 700,
-                    display: 'grid',
-                    placeItems: 'center',
-                  }}
-                >
-                  {group.windowCount}
-                </span>
-              )}
-              {group.windowCount > 0 && (
-                <span
-                  style={{
-                    position: 'absolute',
-                    left: 1,
-                    width: 3,
-                    height: group.active ? 16 : 6,
-                    borderRadius: 999,
-                    background: group.active ? '#d0bcff' : '#938f99',
-                  }}
-                />
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Inline Context Actions Popover when right-clicking a task */}
-      {contextGroup && (
-        <div
-          data-testid="bar-context-menu"
-          style={{
-            position: 'absolute',
-            bottom: 64,
-            left: 2,
-            right: 2,
-            background: '#2b2930',
-            border: '1px solid rgba(255,255,255,0.16)',
-            borderRadius: 12,
-            padding: 4,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 4,
-            zIndex: 20,
-          }}
+        <button
+          type="button"
+          className="group clock state-layer"
+          title="Dashboard"
+          onClick={() => void bridge.openDashboard(view?.monitor.id ?? null)}
         >
+          <Icon name="calendar_month" />
+          <span className="clock-digits">{String(now.getHours()).padStart(2, '0')}</span>
+          <span className="clock-digits">{String(now.getMinutes()).padStart(2, '0')}</span>
+        </button>
+
+        <div className="group status">
           <button
             type="button"
-            title={contextGroup.pinned ? 'Unpin' : 'Pin'}
-            onClick={() => {
-              const exeName = contextGroup.windows[0]?.exeName || contextGroup.key;
-              void bridge.togglePin(contextGroup.exePath, exeName, contextGroup.displayName);
-              setContextGroup(null);
-            }}
-            style={{ padding: '4px 0', borderRadius: 8, background: 'rgba(255,255,255,0.08)' }}
+            className="status-item keyboard state-layer"
+            title="Language"
+            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null)}
           >
-            <Icon name={contextGroup.pinned ? 'keep_off' : 'keep'} />
+            US
           </button>
-          {contextGroup.windowCount > 0 && (
-            <button
-              type="button"
-              title="Close all"
-              onClick={() => {
-                contextGroup.windows.forEach(w => void bridge.closeWindow(w.hwnd, w.pid));
-                setContextGroup(null);
-              }}
-              style={{ padding: '4px 0', borderRadius: 8, background: 'rgba(242,184,181,0.18)', color: '#f2b8b5' }}
-            >
-              <Icon name="close" />
-            </button>
-          )}
+          <button
+            type="button"
+            className="status-item state-layer"
+            title="Audio"
+            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null)}
+          >
+            <Icon name="volume_up" />
+          </button>
+          <button
+            type="button"
+            className="status-item state-layer"
+            title="Network"
+            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null)}
+          >
+            <Icon name="lan" />
+          </button>
+          <button
+            type="button"
+            className="status-item notifications state-layer"
+            title="Notifications"
+            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null)}
+          >
+            <Icon name="notifications" />
+          </button>
         </div>
-      )}
 
-      {/* Bottom: Vertical Clock */}
-      <button
-        type="button"
-        title="Open Dashboard"
-        onClick={() => void bridge.openDashboard(view?.monitor.id ?? null)}
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          lineHeight: 1.05,
-          fontWeight: 700,
-          fontSize: 13,
-          color: '#e6e0e9',
-          padding: '6px 0',
-        }}
-      >
-        <span>{String(now.getHours()).padStart(2, '0')}</span>
-        <span style={{ color: '#d0bcff' }}>{String(now.getMinutes()).padStart(2, '0')}</span>
-      </button>
-    </aside>
+        <button
+          type="button"
+          className="power state-layer"
+          title="Lock workstation"
+          onClick={() => void bridge.sessionAction?.('lock')}
+        >
+          <Icon name="power_settings_new" />
+        </button>
+      </div>
+    </nav>
   );
 }

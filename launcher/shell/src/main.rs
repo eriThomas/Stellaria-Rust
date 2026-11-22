@@ -175,11 +175,15 @@ fn sync_bar_windows<R: Runtime>(app: &AppHandle<R>, snapshot: &ShellSnapshot) {
 
     for (label, window) in app.webview_windows() {
         if label.starts_with("bar-") && !expected_labels.contains(&label.as_str()) {
+            if let Ok(handle) = window.hwnd() {
+                win32_shell::unregister_appbar(handle.0 as HWND);
+            }
             let _ = window.destroy();
         }
     }
 
     if !snapshot.synthetic_bars_enabled {
+        win32_shell::unregister_all_appbars();
         for (label, window) in app.webview_windows() {
             if label.starts_with("bar-") {
                 let _ = window.destroy();
@@ -213,7 +217,20 @@ fn sync_bar_windows<R: Runtime>(app: &AppHandle<R>, snapshot: &ShellSnapshot) {
         };
 
         if let Ok(handle) = window.hwnd() {
-            win32_shell::exclude_from_alt_tab(handle.0 as HWND);
+            let hwnd = handle.0 as HWND;
+            win32_shell::exclude_from_alt_tab(hwnd);
+            if view.monitor.fullscreen {
+                win32_shell::unregister_appbar(hwnd);
+            } else {
+                win32_shell::register_and_reserve_appbar(
+                    hwnd,
+                    snapshot.bar_edge,
+                    p.x,
+                    p.y,
+                    p.width as i32,
+                    p.height as i32,
+                );
+            }
         }
 
         let _ = window.set_position(PhysicalPosition::new(p.x, p.y));
@@ -842,10 +859,12 @@ fn preview_show(
     monitor_id: Option<String>,
     group_key: String,
     anchor_y: f64,
+    mode: Option<String>,
 ) -> Result<(), String> {
     if win32_shell::is_session_locked() {
         return Ok(());
     }
+    let mode_str = mode.unwrap_or_else(|| "preview".to_string());
     let payload = state
         .last_taskbar_payload
         .lock()
@@ -857,7 +876,7 @@ fn preview_show(
         .into_iter()
         .find(|g| g.key == group_key)
         .ok_or_else(|| "group-not-found".to_string())?;
-    if group.windows.is_empty() {
+    if mode_str == "preview" && group.windows.is_empty() {
         return Ok(());
     }
     let icon_url = payload.icons.get(&group.key).cloned();
@@ -893,17 +912,22 @@ fn preview_show(
 
     if let Some(m) = mon {
         let scale = m.scale_factor.max(1.0);
-        let cols = group.windows.len().clamp(1, 3) as f64;
-        let width = ((cols * 244.0 + 24.0) * scale).round() as i32;
-        let rows = (group.windows.len().div_ceil(3)).clamp(1, 2) as f64;
-        let height = ((rows * 170.0 + 48.0) * scale).round() as i32;
+        let (logical_w, logical_h) = if mode_str == "context" {
+            (220.0, 170.0)
+        } else {
+            let cols = group.windows.len().clamp(1, 3) as f64;
+            let rows = (group.windows.len().div_ceil(3)).clamp(1, 2) as f64;
+            (cols * 244.0 + 24.0, rows * 170.0 + 48.0)
+        };
+        let width = (logical_w * scale).round() as i32;
+        let height = (logical_h * scale).round() as i32;
         let bar_w = (54.0 * scale).round() as i32;
         let x = (m.bounds.left + bar_w).clamp(m.bounds.left, (m.bounds.right - width).max(m.bounds.left));
         let desired_y = m.bounds.top + (anchor_y * scale).round() as i32 - height / 2;
         let y = desired_y.clamp(m.bounds.top + 8, (m.bounds.bottom - height - 8).max(m.bounds.top));
 
         let _ = window.set_position(PhysicalPosition::new(x, y));
-        let _ = window.set_size(PhysicalSize::new(width.max(200) as u32, height.max(160) as u32));
+        let _ = window.set_size(PhysicalSize::new(width.max(180) as u32, height.max(140) as u32));
         if let Ok(handle) = window.hwnd() {
             unsafe {
                 ShowWindow(handle.0 as HWND, SW_SHOWNOACTIVATE);
@@ -912,8 +936,8 @@ fn preview_show(
                     HWND_TOPMOST,
                     x,
                     y,
-                    width.max(200),
-                    height.max(160),
+                    width.max(180),
+                    height.max(140),
                     SWP_NOACTIVATE | SWP_SHOWWINDOW,
                 );
             }
@@ -923,7 +947,7 @@ fn preview_show(
     let _ = window.show();
     let _ = app.emit(
         "preview://show",
-        serde_json::json!({ "group": group, "iconUrl": icon_url }),
+        serde_json::json!({ "group": group, "iconUrl": icon_url, "mode": mode_str }),
     );
     Ok(())
 }

@@ -61,6 +61,7 @@ const baseTasks: TaskbarStatePayload = {
 describe('BarApp (Rust Taskbar)', () => {
   it('renders grouped tasks, activates on click, and opens context menu on right-click', async () => {
     const handlers: Array<(snap: ShellSnapshot) => void> = [];
+    const showPreview = vi.fn().mockResolvedValue(undefined);
     const bridge: BarBridge = {
       getSnapshot: vi.fn().mockResolvedValue(baseSnapshot),
       getTaskbarState: vi.fn().mockResolvedValue(baseTasks),
@@ -75,6 +76,7 @@ describe('BarApp (Rust Taskbar)', () => {
       launchApp: vi.fn().mockResolvedValue(undefined),
       toggleLauncher: vi.fn().mockResolvedValue(undefined),
       openDashboard: vi.fn().mockResolvedValue(undefined),
+      showPreview,
     };
 
     render(<BarApp monitorLabel="bar-display1" bridge={bridge} />);
@@ -84,7 +86,7 @@ describe('BarApp (Rust Taskbar)', () => {
     expect(bridge.activateWindow).toHaveBeenCalledWith(101, 1001, false);
 
     fireEvent.contextMenu(vivaldiBtn);
-    expect(screen.getByTestId('bar-context-menu')).toBeInTheDocument();
+    expect(showPreview).toHaveBeenCalledWith('\\\\.\\DISPLAY1', 'vivaldi.exe', expect.any(Number), 'context');
 
     act(() => {
       handlers.forEach(fn => fn({ ...baseSnapshot, revision: 2 }));

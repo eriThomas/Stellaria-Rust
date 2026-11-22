@@ -1,9 +1,10 @@
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use stellaria_core::shell_state::RecoveryReason;
+use stellaria_core::shell_state::{BarEdge, RecoveryReason};
 use windows_sys::core::BOOL;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -13,7 +14,10 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::RemoteDesktop::{
     WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
 };
-use windows_sys::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
+use windows_sys::Win32::UI::Shell::{
+    SHAppBarMessage, SHQueryUserNotificationState, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP,
+    ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS, APPBARDATA, QUNS_RUNNING_D3D_FULL_SCREEN,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, FindWindowW,
     GetClassNameW, GetForegroundWindow, GetMessageW, GetWindowLongPtrW, GetWindowRect,
@@ -31,6 +35,92 @@ static TASKBAR_HIDDEN_BY_US: AtomicBool = AtomicBool::new(false);
 static SESSION_LOCKED: AtomicBool = AtomicBool::new(false);
 static RECOVERY_TX: OnceLock<mpsc::Sender<RecoveryReason>> = OnceLock::new();
 static TASKBAR_CREATED_MSG: OnceLock<u32> = OnceLock::new();
+static REGISTERED_APPBARS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+
+fn appbar_set() -> &'static Mutex<HashSet<usize>> {
+    REGISTERED_APPBARS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn edge_to_abe(edge: BarEdge) -> u32 {
+    match edge {
+        BarEdge::Left => ABE_LEFT,
+        BarEdge::Right => ABE_RIGHT,
+        BarEdge::Top => ABE_TOP,
+        BarEdge::Bottom => ABE_BOTTOM,
+    }
+}
+
+/// Registers (idempotently) and reserves desktop work area for `hwnd` on its physical monitor edge
+/// using `SHAppBarMessage` so desktop icons and maximized windows never extend behind the taskbar.
+pub fn register_and_reserve_appbar(hwnd: HWND, edge: BarEdge, x: i32, y: i32, width: i32, height: i32) {
+    if hwnd.is_null() {
+        return;
+    }
+    let key = hwnd as usize;
+    let is_new = appbar_set()
+        .lock()
+        .map(|mut set| set.insert(key))
+        .unwrap_or(false);
+
+    unsafe {
+        let mut abd: APPBARDATA = std::mem::zeroed();
+        abd.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
+        abd.hWnd = hwnd;
+        if is_new {
+            SHAppBarMessage(ABM_NEW, &mut abd);
+        }
+        abd.uEdge = edge_to_abe(edge);
+        abd.rc = RECT {
+            left: x,
+            top: y,
+            right: x + width,
+            bottom: y + height,
+        };
+        SHAppBarMessage(ABM_QUERYPOS, &mut abd);
+        // Re-assert exact requested thickness after ABM_QUERYPOS
+        match edge {
+            BarEdge::Left => abd.rc.right = abd.rc.left + width,
+            BarEdge::Right => abd.rc.left = abd.rc.right - width,
+            BarEdge::Top => abd.rc.bottom = abd.rc.top + height,
+            BarEdge::Bottom => abd.rc.top = abd.rc.bottom - height,
+        }
+        SHAppBarMessage(ABM_SETPOS, &mut abd);
+    }
+}
+
+pub fn unregister_appbar(hwnd: HWND) {
+    if hwnd.is_null() {
+        return;
+    }
+    let key = hwnd as usize;
+    let removed = appbar_set()
+        .lock()
+        .map(|mut set| set.remove(&key))
+        .unwrap_or(false);
+    if removed {
+        unsafe {
+            let mut abd: APPBARDATA = std::mem::zeroed();
+            abd.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
+            abd.hWnd = hwnd;
+            SHAppBarMessage(ABM_REMOVE, &mut abd);
+        }
+    }
+}
+
+pub fn unregister_all_appbars() {
+    let hwnds: Vec<usize> = appbar_set()
+        .lock()
+        .map(|mut set| set.drain().collect())
+        .unwrap_or_default();
+    for raw in hwnds {
+        unsafe {
+            let mut abd: APPBARDATA = std::mem::zeroed();
+            abd.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
+            abd.hWnd = raw as HWND;
+            SHAppBarMessage(ABM_REMOVE, &mut abd);
+        }
+    }
+}
 
 pub fn is_session_locked() -> bool {
     SESSION_LOCKED.load(Ordering::Acquire)
@@ -114,15 +204,17 @@ pub fn set_windows_taskbar_visible(visible: bool) {
 }
 
 pub fn restore_windows_shell() {
+    unregister_all_appbars();
     set_windows_taskbar_visible(true);
 }
 
-/// Installs a panic hook so a crash never leaves the Windows taskbar hidden.
+/// Installs a panic hook so a crash never leaves the Windows taskbar hidden or work area reserved.
 pub fn install_shell_restore_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        unregister_all_appbars();
         if TASKBAR_HIDDEN_BY_US.load(Ordering::Acquire) {
-            restore_windows_shell();
+            set_windows_taskbar_visible(true);
         }
         previous(info);
     }));
@@ -132,8 +224,9 @@ pub struct ShellRestoreGuard;
 
 impl Drop for ShellRestoreGuard {
     fn drop(&mut self) {
+        unregister_all_appbars();
         if TASKBAR_HIDDEN_BY_US.load(Ordering::Acquire) {
-            restore_windows_shell();
+            set_windows_taskbar_visible(true);
         }
     }
 }

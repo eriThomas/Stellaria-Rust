@@ -13,11 +13,14 @@ import { useDashboardStore } from './store/dashboardStore';
 import { applyMaterialTheme } from './theme/materialYou';
 import type { DashboardSettingsPatch, DashboardTab, MediaAction } from './types/ipc';
 
-const TABS: Array<{ id: DashboardTab; labelKey: string; icon: string }> = [
+type LocalTabId = DashboardTab | 'tools';
+
+const TABS: Array<{ id: LocalTabId; labelKey: string; icon: string }> = [
   { id: 'dash', labelKey: 'tab_dash', icon: 'dashboard' },
   { id: 'media', labelKey: 'tab_media', icon: 'queue_music' },
   { id: 'performance', labelKey: 'tab_performance', icon: 'speed' },
   { id: 'weather', labelKey: 'tab_weather', icon: 'cloud' },
+  { id: 'tools', labelKey: 'tab_tools', icon: 'widgets' },
 ];
 
 export interface DashboardAppProps {
@@ -74,34 +77,38 @@ export function DashboardApp({ bridge = tauriDashboardBridge }: DashboardAppProp
     }
   }, [visibility.open]);
 
+  const activeUiTab: LocalTabId = toolsOpen ? 'tools' : visibility.activeTab;
+
   const layoutTabs = useCallback(() => {
     const viewport = viewportRef.current;
     const track = trackRef.current;
     const indicator = indicatorRef.current;
-    const activeTabButton = tabRefs.current[visibility.activeTab];
-    if (!viewport || !track || !indicator || !activeTabButton) return;
+    const activeTabButton = tabRefs.current[activeUiTab];
+    if (!viewport || !indicator || !activeTabButton) return;
 
-    const activePage = track.querySelector<HTMLElement>(`.page[data-page="${visibility.activeTab}"]`);
-    const inner = activeTabButton.querySelector<HTMLElement>('.tab-inner');
-    if (activePage && activePage.offsetWidth > 0) {
-      viewport.style.width = `${activePage.offsetWidth}px`;
-      viewport.style.height = `${activePage.offsetHeight}px`;
-      track.style.transform = `translateX(${-activePage.offsetLeft}px)`;
+    if (track) {
+      const activePage = track.querySelector<HTMLElement>(`.page[data-page="${activeUiTab}"]`);
+      if (activePage && activePage.offsetWidth > 0) {
+        viewport.style.width = `${activePage.offsetWidth}px`;
+        viewport.style.height = `${activePage.offsetHeight}px`;
+        track.style.transform = `translateX(${-activePage.offsetLeft}px)`;
+      }
     }
+    const inner = activeTabButton.querySelector<HTMLElement>('.tab-inner');
     if (inner && activeTabButton.offsetWidth > 0) {
       indicator.style.width = `${inner.offsetWidth}px`;
       indicator.style.transform = `translateX(${
         activeTabButton.offsetLeft + (activeTabButton.offsetWidth - inner.offsetWidth) / 2
       }px)`;
     }
-  }, [visibility.activeTab]);
+  }, [activeUiTab]);
 
   useLayoutEffect(() => {
     if (!visibility.open) return;
     layoutTabs();
     const raf = window.requestAnimationFrame(layoutTabs);
     return () => window.cancelAnimationFrame(raf);
-  }, [visibility.open, visibility.activeTab, layoutTabs, weather, media, telemetry]);
+  }, [visibility.open, activeUiTab, layoutTabs, weather, media, telemetry]);
 
   useEffect(() => {
     if (!visibility.open || !trackRef.current || typeof ResizeObserver === 'undefined') return;
@@ -247,7 +254,11 @@ export function DashboardApp({ bridge = tauriDashboardBridge }: DashboardAppProp
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [bridge, visibility.open, visibility.monitorId]);
 
-  const handleTabSelect = (tab: DashboardTab) => {
+  const handleTabSelect = (tab: LocalTabId) => {
+    if (tab === 'tools') {
+      setToolsOpen(true);
+      return;
+    }
     setToolsOpen(false);
     void bridge.setActiveTab(tab).then(applyVisibilityEvent);
   };
@@ -270,28 +281,10 @@ export function DashboardApp({ bridge = tauriDashboardBridge }: DashboardAppProp
           <button
             type="button"
             className="dashboard-settings-trigger"
-            style={{ right: 48 }}
-            aria-expanded={toolsOpen}
-            aria-label="Tools"
-            title="Tools (Pomodoro, Notes, To-Do, Water, Keep Awake)"
-            onClick={() => {
-              setToolsOpen(open => !open);
-              setSettingsOpen(false);
-            }}
-          >
-            <Icon name="handyman" />
-          </button>
-
-          <button
-            type="button"
-            className="dashboard-settings-trigger"
             aria-expanded={settingsOpen}
             aria-label={translate(lang, 'settings')}
             title={translate(lang, 'settings')}
-            onClick={() => {
-              setSettingsOpen(open => !open);
-              setToolsOpen(false);
-            }}
+            onClick={() => setSettingsOpen(open => !open)}
           >
             <Icon name="settings" />
           </button>
@@ -306,7 +299,7 @@ export function DashboardApp({ bridge = tauriDashboardBridge }: DashboardAppProp
               aria-label="Dashboard sections"
               onWheel={event => {
                 event.preventDefault();
-                const idx = TABS.findIndex(t => t.id === visibility.activeTab);
+                const idx = TABS.findIndex(t => t.id === activeUiTab);
                 const next = Math.min(TABS.length - 1, Math.max(0, idx + (event.deltaY > 0 ? 1 : -1)));
                 handleTabSelect(TABS[next].id);
               }}
@@ -320,8 +313,8 @@ export function DashboardApp({ bridge = tauriDashboardBridge }: DashboardAppProp
                     }}
                     type="button"
                     role="tab"
-                    aria-selected={visibility.activeTab === tab.id}
-                    className={`tab${visibility.activeTab === tab.id ? ' current' : ''}`}
+                    aria-selected={activeUiTab === tab.id}
+                    className={`tab${activeUiTab === tab.id ? ' current' : ''}`}
                     onClick={() => handleTabSelect(tab.id)}
                   >
                     <span className="tab-inner">
@@ -336,48 +329,45 @@ export function DashboardApp({ bridge = tauriDashboardBridge }: DashboardAppProp
             </nav>
 
             <div className="viewport" ref={viewportRef}>
-              {hydrated && visibility.open && toolsOpen ? (
-                <ToolsTab />
-              ) : (
-                <div className="track" ref={trackRef}>
-                  {hydrated && visibility.open && (
-                    <>
-                      <HomeTab
-                        lang={lang}
-                        isOpen={visibility.open}
-                        clockSeconds={settings.clockSeconds}
-                        weatherEnabled={settings.weatherEnabled}
-                        weather={weather}
-                        weatherError={weatherError}
-                        sysinfo={sysinfo}
-                        telemetry={telemetry}
-                        media={media}
-                        onMediaAction={handleMediaAction}
-                      />
-                      <MediaTab
-                        lang={lang}
-                        media={media}
-                        lyricsEnabled={settings.lyricsEnabled}
-                        lyrics={lyrics}
-                        onMediaAction={handleMediaAction}
-                      />
-                      <PerformanceTab
-                        lang={lang}
-                        sysinfo={sysinfo}
-                        telemetry={telemetry}
-                        networkHistory={networkHistory}
-                      />
-                      <WeatherTab
-                        lang={lang}
-                        weatherEnabled={settings.weatherEnabled}
-                        weather={weather}
-                        weatherError={weatherError}
-                        onRefresh={() => refreshWeather(true)}
-                      />
-                    </>
-                  )}
-                </div>
-              )}
+              <div className="track" ref={trackRef}>
+                {hydrated && visibility.open && (
+                  <>
+                    <HomeTab
+                      lang={lang}
+                      isOpen={visibility.open}
+                      clockSeconds={settings.clockSeconds}
+                      weatherEnabled={settings.weatherEnabled}
+                      weather={weather}
+                      weatherError={weatherError}
+                      sysinfo={sysinfo}
+                      telemetry={telemetry}
+                      media={media}
+                      onMediaAction={handleMediaAction}
+                    />
+                    <MediaTab
+                      lang={lang}
+                      media={media}
+                      lyricsEnabled={settings.lyricsEnabled}
+                      lyrics={lyrics}
+                      onMediaAction={handleMediaAction}
+                    />
+                    <PerformanceTab
+                      lang={lang}
+                      sysinfo={sysinfo}
+                      telemetry={telemetry}
+                      networkHistory={networkHistory}
+                    />
+                    <WeatherTab
+                      lang={lang}
+                      weatherEnabled={settings.weatherEnabled}
+                      weather={weather}
+                      weatherError={weatherError}
+                      onRefresh={() => refreshWeather(true)}
+                    />
+                    <ToolsTab />
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </section>

@@ -56,28 +56,37 @@ fn base64_encode(input: &[u8]) -> String {
     out
 }
 
-/// Encodes a top-down 32-bit BGRA pixel buffer into a standard BMP file byte vector.
+/// Encodes a top-down 32-bit BGRA pixel buffer into a BITMAPV4HEADER (108-byte) BMP with true alpha channel.
 fn encode_bgra_as_bmp(width: u32, height: u32, bgra: &[u8]) -> Vec<u8> {
+    const HEADER_SIZE: u32 = 14 + 108;
+    const BI_BITFIELDS: u32 = 3;
     let pixel_bytes = bgra.len() as u32;
-    let file_size = 54 + pixel_bytes;
+    let file_size = HEADER_SIZE + pixel_bytes;
     let mut bmp = Vec::with_capacity(file_size as usize);
     // BITMAPFILEHEADER (14 bytes)
     bmp.extend_from_slice(b"BM");
     bmp.extend_from_slice(&file_size.to_le_bytes());
     bmp.extend_from_slice(&0u32.to_le_bytes());
-    bmp.extend_from_slice(&54u32.to_le_bytes());
-    // BITMAPINFOHEADER (40 bytes)
-    bmp.extend_from_slice(&40u32.to_le_bytes());
+    bmp.extend_from_slice(&HEADER_SIZE.to_le_bytes());
+    // BITMAPV4HEADER (108 bytes)
+    bmp.extend_from_slice(&108u32.to_le_bytes());
     bmp.extend_from_slice(&(width as i32).to_le_bytes());
     bmp.extend_from_slice(&(-(height as i32)).to_le_bytes()); // top-down
     bmp.extend_from_slice(&1u16.to_le_bytes()); // planes
     bmp.extend_from_slice(&32u16.to_le_bytes()); // 32bpp BGRA
-    bmp.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+    bmp.extend_from_slice(&BI_BITFIELDS.to_le_bytes());
     bmp.extend_from_slice(&pixel_bytes.to_le_bytes());
-    bmp.extend_from_slice(&0u32.to_le_bytes());
-    bmp.extend_from_slice(&0u32.to_le_bytes());
-    bmp.extend_from_slice(&0u32.to_le_bytes());
-    bmp.extend_from_slice(&0u32.to_le_bytes());
+    bmp.extend_from_slice(&2835u32.to_le_bytes()); // X pixels per meter
+    bmp.extend_from_slice(&2835u32.to_le_bytes()); // Y pixels per meter
+    bmp.extend_from_slice(&0u32.to_le_bytes()); // colors used
+    bmp.extend_from_slice(&0u32.to_le_bytes()); // important colors
+    // RGBA channel bitmasks (BGRA memory order)
+    bmp.extend_from_slice(&0x00FF_0000u32.to_le_bytes()); // Red
+    bmp.extend_from_slice(&0x0000_FF00u32.to_le_bytes()); // Green
+    bmp.extend_from_slice(&0x0000_00FFu32.to_le_bytes()); // Blue
+    bmp.extend_from_slice(&0xFF00_0000u32.to_le_bytes()); // Alpha
+    bmp.extend_from_slice(&0x7352_4742u32.to_le_bytes()); // LCS_sRGB ("sRGB")
+    bmp.extend_from_slice(&[0u8; 48]); // endpoints (36) + gamma (12)
     bmp.extend_from_slice(bgra);
     bmp
 }
@@ -149,6 +158,31 @@ fn extract_icon_uncached(exe_path: &str) -> Option<String> {
                 );
                 ReleaseDC(std::ptr::null_mut(), screen_dc);
                 if got > 0 {
+                    // Legacy non-alpha icons have all alpha bytes == 0; apply hbmMask if present.
+                    let has_alpha = pixels.chunks_exact(4).any(|px| px[3] != 0);
+                    if !has_alpha && !icon_info.hbmMask.is_null() {
+                        let mut mask_pixels = vec![0u8; (w * h * 4) as usize];
+                        let mask_dc = GetDC(std::ptr::null_mut());
+                        let mask_got = GetDIBits(
+                            mask_dc,
+                            icon_info.hbmMask,
+                            0,
+                            h,
+                            mask_pixels.as_mut_ptr().cast(),
+                            &mut bi,
+                            DIB_RGB_COLORS,
+                        );
+                        ReleaseDC(std::ptr::null_mut(), mask_dc);
+                        if mask_got > 0 {
+                            for (px, mpx) in pixels.chunks_exact_mut(4).zip(mask_pixels.chunks_exact(4)) {
+                                px[3] = if mpx[0] == 0 { 255 } else { 0 };
+                            }
+                        } else {
+                            for px in pixels.chunks_exact_mut(4) {
+                                px[3] = 255;
+                            }
+                        }
+                    }
                     let bmp = encode_bgra_as_bmp(w, h, &pixels);
                     Some(format!("data:image/bmp;base64,{}", base64_encode(&bmp)))
                 } else {
