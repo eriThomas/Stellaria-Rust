@@ -22,6 +22,10 @@ import {
   panelSpawnKey,
   waitForMatchingPong,
 } from '../../pack/src/core/panel-policy.js';
+import {
+  bindTransientTaskReset,
+  keepWidgetOutOfTaskSwitcher,
+} from '../../pack/src/core/runtime-recovery.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -174,14 +178,42 @@ test('bar and popout bypass stale WebView caching without disabling other widget
   assert.equal(widgets.bar.presets[0].monitorSelection.type, 'all');
 });
 
-test('widgets use Zebar task-switcher API and offline bars discard stale tasks', async () => {
-  const common = await readFile(path.join(root, 'pack', 'common.js'), 'utf8');
-  assert.match(common, /setSkipTaskbar\(true\)/);
+test('an offline helper clears transient tasks without touching pinned applications', () => {
+  const pinned = [{ key: 'vivaldi', title: 'Vivaldi' }];
+  const values = new Map([
+    ['tasks', [{ id: 'stale-window' }]],
+    ['pins', pinned],
+  ]);
+  let listener;
+  let renders = 0;
+  const client = {
+    onConnection(callback) {
+      listener = callback;
+      callback(false);
+      return () => {};
+    },
+  };
+  const storage = { set: (key, value) => values.set(key, value) };
 
-  const bar = await readFile(path.join(root, 'pack', 'bar.js'), 'utf8');
-  assert.match(bar, /onConnection\(connected\s*=>/);
-  assert.match(bar, /store\.set\(keys\.tasks, \[\]\)/);
-  assert.doesNotMatch(bar, /store\.set\(keys\.pinnedTasks, \[\]\)/);
+  bindTransientTaskReset(client, storage, 'tasks', () => { renders++; });
+
+  assert.deepEqual(values.get('tasks'), []);
+  assert.strictEqual(values.get('pins'), pinned);
+  assert.equal(renders, 1);
+
+  values.set('tasks', [{ id: 'live-window' }]);
+  listener(true);
+  assert.deepEqual(values.get('tasks'), [{ id: 'live-window' }]);
+  assert.equal(renders, 1);
+});
+
+test('widgets ask Zebar itself to stay out of the Windows task switcher', async () => {
+  const calls = [];
+  const widget = { tauriWindow: { setSkipTaskbar: async value => calls.push(value) } };
+
+  await keepWidgetOutOfTaskSwitcher(widget);
+
+  assert.deepEqual(calls, [true]);
 });
 
 test('integrated settings expose every customizer preference', async () => {

@@ -6,6 +6,7 @@ import {
   actions,
   analyzeImage,
   applyTheme,
+  bindTransientTaskReset,
   currentMonitorName,
   dashboardState,
   describeWeather,
@@ -622,13 +623,9 @@ async function runHotkey(name, target) {
 function relayHelperState() {
   let locks = null;
 
-  helperClient.onConnection(connected => {
-    if (connected) return;
-    // Tasks are transient. Never keep dead windows from a previous session when
-    // the helper is unavailable; pinned applications live in a separate key.
-    store.set(keys.tasks, []);
-    renderTasks();
-  });
+  // Tasks are transient. Never keep dead windows from a previous session when
+  // the helper is unavailable; pinned applications live in a separate key.
+  bindTransientTaskReset(helperClient, store, keys.tasks, renderTasks);
 
   helperClient.onState('icons', icons => {
     store.set(keys.taskIcons, icons ?? {});
