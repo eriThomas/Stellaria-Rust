@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod dashboard;
 mod foreground;
 mod installation;
 mod tray;
@@ -12,7 +13,7 @@ use std::process::Command;
 
 use serde::Serialize;
 use tauri::ipc::Response;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
 
@@ -140,6 +141,13 @@ async fn wallpaper() -> Result<Response, String> {
 }
 
 fn main() {
+    let dashboard_state = dashboard::DashboardHostState::initialize(&environment("LOCALAPPDATA"));
+    let dashboard_pilot = dashboard_state
+        .core
+        .lock()
+        .map(|core| core.flags().dashboard_pilot)
+        .unwrap_or(false);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, arguments, _| {
             tray::reveal(app, None);
@@ -148,8 +156,11 @@ fn main() {
             }
         }))
         .manage(update::UpdateState::default())
-        .setup(|app| {
-            tray::create(app.handle())?;
+        .manage(dashboard_state)
+        .setup(move |app| {
+            tray::create(app.handle(), dashboard_pilot)?;
+            let state = app.state::<dashboard::DashboardHostState>();
+            state.logger.timing("startup", "rust_setup_complete", state.elapsed_ms());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -168,7 +179,11 @@ fn main() {
             update::install_update,
             update::installed,
             update::release_notes,
-            foreground::present_window
+            foreground::present_window,
+            dashboard::dashboard_get_snapshot,
+            dashboard::dashboard_set_visibility,
+            dashboard::dashboard_set_active_tab,
+            dashboard::dashboard_update_settings
         ])
         .run(tauri::generate_context!())
         .expect("Stellaria could not start");

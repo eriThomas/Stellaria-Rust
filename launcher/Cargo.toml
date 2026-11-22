@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "core"]
+resolver = "2"
+
 [package]
 name = "stellaria-launcher"
 version = "1.1.0"
@@ -6,10 +10,15 @@ license = "GPL-3.0-only"
 description = "Stellaria launcher"
 publish = false
 
+[features]
+default = []
+experimental = ["stellaria-core/experimental"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+stellaria-core = { path = "core" }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }

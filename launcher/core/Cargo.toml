@@ -1,0 +1,15 @@
+[package]
+name = "stellaria-core"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Authoritative core state, monitor math, settings, and telemetry primitives for Stellaria"
+publish = false
+
+[features]
+default = []
+experimental = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
