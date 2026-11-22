@@ -1,1 +1,1 @@
-{"shell-default":{"identifier":"shell-default","description":"","local":true,"windows":["dashboard","bar-*","launcher","preview"],"permissions":["core:event:default","core:window:allow-hide","core:window:allow-is-visible","core:window:allow-set-focus"]}}
+{"shell-default":{"identifier":"shell-default","description":"","local":true,"windows":["dashboard","bar-*","launcher","preview","session"],"permissions":["core:event:default","core:window:allow-hide","core:window:allow-is-visible","core:window:allow-set-focus"]}}

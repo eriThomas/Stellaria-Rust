@@ -92,4 +92,54 @@ describe('BarApp (Rust Taskbar)', () => {
       handlers.forEach(fn => fn({ ...baseSnapshot, revision: 2 }));
     });
   });
+
+  it('wires bottom status controls (keyboard, volume, network, notifications, power drawer)', async () => {
+    const openDashboard = vi.fn().mockResolvedValue(undefined);
+    const toggleSession = vi.fn().mockResolvedValue(undefined);
+    const openSettings = vi.fn().mockResolvedValue(undefined);
+    const volumeAction = vi.fn().mockResolvedValue(undefined);
+    const bridge: BarBridge = {
+      getSnapshot: vi.fn().mockResolvedValue(baseSnapshot),
+      getTaskbarState: vi.fn().mockResolvedValue(baseTasks),
+      onSnapshot: vi.fn().mockResolvedValue(() => {}),
+      onTasks: vi.fn().mockResolvedValue(() => {}),
+      activateWindow: vi.fn().mockResolvedValue(undefined),
+      closeWindow: vi.fn().mockResolvedValue(undefined),
+      togglePin: vi.fn().mockResolvedValue(false),
+      launchApp: vi.fn().mockResolvedValue(undefined),
+      toggleLauncher: vi.fn().mockResolvedValue(undefined),
+      openDashboard,
+      showPreview: vi.fn().mockResolvedValue(undefined),
+      toggleSession,
+      openSettings,
+      volumeAction,
+      getKeyboardLayout: vi.fn().mockResolvedValue('PT'),
+    };
+
+    render(<BarApp monitorLabel="bar-display1" bridge={bridge} />);
+
+    const kbdBtn = await screen.findByText('PT');
+    fireEvent.click(kbdBtn);
+    expect(openSettings).toHaveBeenCalledWith('regionlanguage');
+
+    const volBtn = screen.getByTitle(/Volume/i);
+    fireEvent.click(volBtn);
+    expect(volumeAction).toHaveBeenCalledWith('mute');
+    fireEvent.wheel(volBtn, { deltaY: -100 });
+    expect(volumeAction).toHaveBeenCalledWith('up');
+    fireEvent.contextMenu(volBtn);
+    expect(openSettings).toHaveBeenCalledWith('sound');
+
+    const netBtn = screen.getByTitle('Network settings');
+    fireEvent.click(netBtn);
+    expect(openSettings).toHaveBeenCalledWith('network-status');
+
+    const notifBtn = screen.getByTitle('Notification settings');
+    fireEvent.click(notifBtn);
+    expect(openSettings).toHaveBeenCalledWith('notifications');
+
+    const powerBtn = screen.getByTitle(/Session menu/i);
+    fireEvent.click(powerBtn);
+    expect(toggleSession).toHaveBeenCalledWith('\\\\.\\DISPLAY1');
+  });
 });

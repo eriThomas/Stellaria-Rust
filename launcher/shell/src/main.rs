@@ -46,6 +46,7 @@ use web_services::WebServicesState;
 const DASHBOARD_LABEL: &str = "dashboard";
 const LAUNCHER_LABEL: &str = "launcher";
 const PREVIEW_LABEL: &str = "preview";
+const SESSION_LABEL: &str = "session";
 const DASH_LOGICAL_W: f64 = 1040.0;
 const DASH_LOGICAL_H: f64 = 560.0;
 const HOVER_TRIGGER_HALF_W: f64 = 450.0;
@@ -1030,7 +1031,199 @@ fn shell_set_keep_awake(enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn dashboard_toggle(
+    app: AppHandle,
+    state: State<'_, ShellAppState>,
+    monitor_id: Option<String>,
+    tab: Option<DashboardTab>,
+) -> Result<VisibilityEvent, String> {
+    let (currently_open, current_tab) = state
+        .dashboard
+        .lock()
+        .map(|d| (d.visibility().open, d.visibility().active_tab))
+        .unwrap_or((false, DashboardTab::Dash));
+
+    if currently_open {
+        if let Some(requested_tab) = tab {
+            if requested_tab != current_tab {
+                let event = state
+                    .dashboard
+                    .lock()
+                    .map_err(|_| "busy".to_string())?
+                    .set_active_tab(requested_tab);
+                let _ = app.emit("dashboard://visibility", &event);
+                return Ok(event);
+            }
+        }
+        return apply_dashboard_visibility(&app, false, monitor_id, OpenTrigger::Click);
+    }
+
+    if let Some(requested_tab) = tab {
+        if let Ok(mut dash) = state.dashboard.lock() {
+            let _ = dash.set_active_tab(requested_tab);
+        }
+    }
+    apply_dashboard_visibility(&app, true, monitor_id, OpenTrigger::Click)
+}
+
+#[tauri::command]
+async fn session_toggle(app: AppHandle, monitor_id: Option<String>) -> Result<(), String> {
+    if win32_shell::is_session_locked() {
+        return Ok(());
+    }
+    if let Some(existing) = app.get_webview_window(SESSION_LABEL) {
+        if existing.is_visible().unwrap_or(false) {
+            let _ = app.emit("session://visibility", false);
+            let w = existing.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(320));
+                let _ = w.hide();
+            });
+            return Ok(());
+        }
+        let monitors = collect_monitors(&app);
+        if let Some(m) = monitor_id
+            .as_deref()
+            .and_then(|id| monitors.iter().find(|m| m.id == id))
+            .or_else(|| monitors.iter().find(|m| m.primary))
+            .or_else(|| monitors.first())
+        {
+            let scale = m.scale_factor.max(1.0);
+            let w = (170.0 * scale).round() as i32;
+            let h = (590.0 * scale).round() as i32;
+            let x = m.bounds.right - w;
+            let y = m.bounds.top + (m.bounds.height() - h) / 2;
+            let _ = existing.set_position(PhysicalPosition::new(x, y));
+            let _ = existing.set_size(PhysicalSize::new(w as u32, h as u32));
+        }
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        let _ = app.emit("session://visibility", true);
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(&app, SESSION_LABEL, WebviewUrl::App("session.html".into()))
+        .title("Stellaria Session")
+        .decorations(false)
+        .shadow(false)
+        .transparent(true)
+        .resizable(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .visible(false)
+        .focused(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    if let Ok(handle) = window.hwnd() {
+        win32_shell::exclude_from_alt_tab(handle.0 as HWND);
+    }
+
+    let monitors = collect_monitors(&app);
+    if let Some(m) = monitor_id
+        .as_deref()
+        .and_then(|id| monitors.iter().find(|m| m.id == id))
+        .or_else(|| monitors.iter().find(|m| m.primary))
+        .or_else(|| monitors.first())
+    {
+        let scale = m.scale_factor.max(1.0);
+        let w = (170.0 * scale).round() as i32;
+        let h = (590.0 * scale).round() as i32;
+        let x = m.bounds.right - w;
+        let y = m.bounds.top + (m.bounds.height() - h) / 2;
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+        let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+    let _ = app.emit("session://visibility", true);
+    Ok(())
+}
+
+#[tauri::command]
+fn session_hide(app: AppHandle) {
+    if let Some(w) = app.get_webview_window(SESSION_LABEL) {
+        let _ = app.emit("session://visibility", false);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(320));
+            let _ = w.hide();
+        });
+    }
+}
+
+#[tauri::command]
+fn shell_open_settings(page: String) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const ALLOWED: [&str; 4] = ["sound", "network-status", "regionlanguage", "notifications"];
+    if !ALLOWED.contains(&page.as_str()) {
+        return Err("refused".to_string());
+    }
+    let uri = format!("ms-settings:{page}");
+    std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", &uri])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn shell_volume_action(action: String) -> Result<(), String> {
+    #[link(name = "user32")]
+    extern "system" {
+        fn keybd_event(b_vk: u8, b_scan: u8, dw_flags: u32, dw_extra_info: usize);
+    }
+    const KEYEVENTF_KEYUP: u32 = 0x0002;
+    let vk: u8 = match action.as_str() {
+        "mute" => 0xAD, // VK_VOLUME_MUTE
+        "down" => 0xAE, // VK_VOLUME_DOWN
+        "up" => 0xAF,   // VK_VOLUME_UP
+        _ => return Err("unknown-volume-action".to_string()),
+    };
+    unsafe {
+        keybd_event(vk, 0, 0, 0);
+        keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn shell_get_keyboard_layout() -> String {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetForegroundWindow() -> HWND;
+        fn GetWindowThreadProcessId(hwnd: HWND, pid: *mut u32) -> u32;
+        fn GetKeyboardLayout(id_thread: u32) -> isize;
+    }
+    let hkl = unsafe {
+        let fg = GetForegroundWindow();
+        let tid = if fg.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, std::ptr::null_mut())
+        };
+        GetKeyboardLayout(tid)
+    };
+    let primary_lang = (hkl as u32) & 0x03FF;
+    match primary_lang {
+        0x16 => "PT".to_string(),
+        0x09 => "US".to_string(),
+        0x0C => "FR".to_string(),
+        0x0A => "ES".to_string(),
+        0x07 => "DE".to_string(),
+        0x10 => "IT".to_string(),
+        0x11 => "JP".to_string(),
+        0x12 => "KO".to_string(),
+        0x19 => "RU".to_string(),
+        _ => "US".to_string(),
+    }
+}
+
+#[tauri::command]
 fn shell_session_action(app: AppHandle, action: String) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     match action.as_str() {
         "lock" => {
             #[link(name = "user32")]
@@ -1041,6 +1234,41 @@ fn shell_session_action(app: AppHandle, action: String) -> Result<(), String> {
                 LockWorkStation();
             }
             Ok(())
+        }
+        "sleep" => {
+            std::process::Command::new("rundll32.exe")
+                .args(["powrprof.dll,SetSuspendState", "0,1,0"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        "logout" => {
+            win32_shell::restore_windows_shell();
+            std::process::Command::new("shutdown.exe")
+                .args(["/l"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        "restart" => {
+            win32_shell::restore_windows_shell();
+            std::process::Command::new("shutdown.exe")
+                .args(["/r", "/t", "0"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        "shutdown" => {
+            win32_shell::restore_windows_shell();
+            std::process::Command::new("shutdown.exe")
+                .args(["/s", "/t", "0"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         }
         "restoreShell" => {
             if let Ok(mut hidden) = app.state::<ShellAppState>().windows_taskbar_hidden.lock() {
@@ -1168,6 +1396,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             dashboard_get_snapshot,
             dashboard_set_visibility,
+            dashboard_toggle,
             dashboard_set_active_tab,
             dashboard_update_settings,
             dashboard_get_sysinfo,
@@ -1189,6 +1418,11 @@ fn main() {
             launcher_hide,
             preview_show,
             preview_hide,
+            session_toggle,
+            session_hide,
+            shell_open_settings,
+            shell_volume_action,
+            shell_get_keyboard_layout,
             shell_set_keep_awake,
             shell_session_action
         ])

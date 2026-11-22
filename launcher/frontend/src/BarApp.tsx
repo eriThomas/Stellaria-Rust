@@ -72,7 +72,10 @@ export interface BarBridge {
     anchorY: number,
     mode?: 'preview' | 'context',
   ) => Promise<void>;
-  sessionAction?: (action: 'lock' | 'restoreShell' | 'quit') => Promise<void>;
+  toggleSession?: (monitorId: string | null) => Promise<void>;
+  openSettings?: (page: 'sound' | 'network-status' | 'regionlanguage' | 'notifications') => Promise<void>;
+  volumeAction?: (action: 'mute' | 'up' | 'down') => Promise<void>;
+  getKeyboardLayout?: () => Promise<string>;
 }
 
 const defaultBridge: BarBridge = {
@@ -90,10 +93,13 @@ const defaultBridge: BarBridge = {
   launchApp: path => invoke<void>('taskbar_launch_app', { path }),
   toggleLauncher: () => invoke<void>('launcher_toggle'),
   openDashboard: (monitorId, tab) =>
-    invoke<void>('dashboard_set_visibility', { open: true, monitorId, trigger: 'click', tab }),
+    invoke<void>('dashboard_toggle', { monitorId, tab }),
   showPreview: (monitorId, groupKey, anchorY, mode = 'preview') =>
     invoke<void>('preview_show', { monitorId, groupKey, anchorY, mode }),
-  sessionAction: action => invoke<void>('shell_session_action', { action }),
+  toggleSession: monitorId => invoke<void>('session_toggle', { monitorId }),
+  openSettings: page => invoke<void>('shell_open_settings', { page }),
+  volumeAction: action => invoke<void>('shell_volume_action', { action }),
+  getKeyboardLayout: () => invoke<string>('shell_get_keyboard_layout'),
 };
 
 export interface BarAppProps {
@@ -105,6 +111,7 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
   const [snapshot, setSnapshot] = useState<ShellSnapshot | null>(null);
   const [taskbar, setTaskbar] = useState<TaskbarStatePayload | null>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
+  const [kbLayout, setKbLayout] = useState('US');
   const [now, setNow] = useState(() => new Date());
   const hoverTimerRef = useRef<number | null>(null);
 
@@ -150,10 +157,18 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
       .catch(() => {});
 
     const clockTimer = window.setInterval(() => setNow(new Date()), 15_000);
+    const pollKb = () => {
+      bridge.getKeyboardLayout?.().then(code => {
+        if (active && code) setKbLayout(code);
+      }).catch(() => {});
+    };
+    pollKb();
+    const kbTimer = window.setInterval(pollKb, 2000);
 
     return () => {
       active = false;
       window.clearInterval(clockTimer);
+      window.clearInterval(kbTimer);
       unlisteners.forEach(fn => fn());
     };
   }, [bridge]);
@@ -268,7 +283,7 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
         <button
           type="button"
           className="group weather state-layer"
-          title="Weather"
+          title={weather ? `${weather.city}: ${Math.round(weather.current.temperature)}°C` : 'Weather'}
           hidden={!weather}
           onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'weather')}
         >
@@ -281,7 +296,7 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
         <button
           type="button"
           className="group clock state-layer"
-          title="Dashboard"
+          title={now.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
           onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'dash')}
         >
           <Icon name="calendar_month" />
@@ -293,32 +308,40 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
           <button
             type="button"
             className="status-item keyboard state-layer"
-            title="Language"
-            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'dash')}
+            title="Keyboard layout (click to open Language settings)"
+            onClick={() => void bridge.openSettings?.('regionlanguage')}
           >
-            US
+            {kbLayout}
           </button>
           <button
             type="button"
             className="status-item state-layer"
-            title="Media & Audio"
-            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'media')}
+            title="Volume (click: mute, scroll: adjust, right-click: Sound settings)"
+            onClick={() => void bridge.volumeAction?.('mute')}
+            onContextMenu={e => {
+              e.preventDefault();
+              void bridge.openSettings?.('sound');
+            }}
+            onWheel={e => {
+              e.preventDefault();
+              void bridge.volumeAction?.(e.deltaY < 0 ? 'up' : 'down');
+            }}
           >
             <Icon name="volume_up" />
           </button>
           <button
             type="button"
             className="status-item state-layer"
-            title="Network & Performance"
-            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'performance')}
+            title="Network settings"
+            onClick={() => void bridge.openSettings?.('network-status')}
           >
             <Icon name="lan" />
           </button>
           <button
             type="button"
             className="status-item notifications state-layer"
-            title="Dashboard"
-            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'dash')}
+            title="Notification settings"
+            onClick={() => void bridge.openSettings?.('notifications')}
           >
             <Icon name="notifications" />
           </button>
@@ -327,8 +350,8 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
         <button
           type="button"
           className="power state-layer"
-          title="Open Dashboard"
-          onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'dash')}
+          title="Session menu (Lock, Sleep, Sign out, Restart, Shut down)"
+          onClick={() => void bridge.toggleSession?.(view?.monitor.id ?? null)}
         >
           <Icon name="power_settings_new" />
         </button>
