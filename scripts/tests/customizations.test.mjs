@@ -174,6 +174,16 @@ test('bar and popout bypass stale WebView caching without disabling other widget
   assert.equal(widgets.bar.presets[0].monitorSelection.type, 'all');
 });
 
+test('widgets use Zebar task-switcher API and offline bars discard stale tasks', async () => {
+  const common = await readFile(path.join(root, 'pack', 'common.js'), 'utf8');
+  assert.match(common, /setSkipTaskbar\(true\)/);
+
+  const bar = await readFile(path.join(root, 'pack', 'bar.js'), 'utf8');
+  assert.match(bar, /onConnection\(connected\s*=>/);
+  assert.match(bar, /store\.set\(keys\.tasks, \[\]\)/);
+  assert.doesNotMatch(bar, /store\.set\(keys\.pinnedTasks, \[\]\)/);
+});
+
 test('integrated settings expose every customizer preference', async () => {
   const settings = await readFile(path.join(root, 'pack', 'settings.js'), 'utf8');
   for (const key of Object.keys(customizerDefaults)) {

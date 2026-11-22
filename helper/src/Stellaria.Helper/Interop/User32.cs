@@ -17,11 +17,8 @@ internal static unsafe partial class User32
     public const int SwMinimize = 6;
     public const int SwMaximize = 3;
     public const int SwRestore = 9;
-    public const uint SwpNoSize = 0x0001;
-    public const uint SwpNoMove = 0x0002;
     public const uint SwpNoZOrder = 0x0004;
     public const uint SwpNoActivate = 0x0010;
-    public const uint SwpFrameChanged = 0x0020;
     public const uint WmClose = 0x0010;
     public const uint WmQueryEndSession = 0x0011;
     public const uint WmEndSession = 0x0016;
@@ -89,9 +86,6 @@ internal static unsafe partial class User32
 
     [LibraryImport("user32.dll", EntryPoint = "GetWindowLongW")]
     public static partial int GetWindowLong(nint hwnd, int index);
-
-    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongW", SetLastError = true)]
-    public static partial int SetWindowLong(nint hwnd, int index, int value);
 
     [LibraryImport("user32.dll")]
     public static partial nint GetWindow(nint hwnd, uint command);
