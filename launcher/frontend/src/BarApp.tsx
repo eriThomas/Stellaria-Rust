@@ -81,6 +81,7 @@ export interface BarBridge {
   openSettings?: (page: 'sound' | 'network-status' | 'regionlanguage' | 'notifications') => Promise<void>;
   volumeAction?: (action: 'mute' | 'up' | 'down') => Promise<void>;
   getKeyboardLayout?: () => Promise<string>;
+  getNotificationCount?: () => Promise<number>;
 }
 
 const defaultBridge: BarBridge = {
@@ -107,6 +108,16 @@ const defaultBridge: BarBridge = {
   openSettings: page => invoke<void>('shell_open_settings', { page }),
   volumeAction: action => invoke<void>('shell_volume_action', { action }),
   getKeyboardLayout: () => invoke<string>('shell_get_keyboard_layout'),
+  getNotificationCount: async () => {
+    const items = await invoke<Array<{ id: string }>>('popout_get_notifications');
+    let dismissed: string[] = [];
+    try {
+      dismissed = JSON.parse(localStorage.getItem('stellaria:dismissed-notifs') || '[]');
+    } catch {
+      dismissed = [];
+    }
+    return items.filter(i => !dismissed.includes(i.id)).length;
+  },
 };
 
 export interface BarAppProps {
@@ -119,6 +130,7 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
   const [taskbar, setTaskbar] = useState<TaskbarStatePayload | null>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
   const [kbLayout, setKbLayout] = useState('US');
+  const [notifCount, setNotifCount] = useState(0);
   const [now, setNow] = useState(() => new Date());
   const hoverTimerRef = useRef<number | null>(null);
 
@@ -169,13 +181,21 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
         if (active && code) setKbLayout(code);
       }).catch(() => {});
     };
+    const pollNotifs = () => {
+      bridge.getNotificationCount?.().then(count => {
+        if (active) setNotifCount(count);
+      }).catch(() => {});
+    };
     pollKb();
+    pollNotifs();
     const kbTimer = window.setInterval(pollKb, 2000);
+    const notifTimer = window.setInterval(pollNotifs, 10_000);
 
     return () => {
       active = false;
       window.clearInterval(clockTimer);
       window.clearInterval(kbTimer);
+      window.clearInterval(notifTimer);
       unlisteners.forEach(fn => fn());
     };
   }, [bridge]);
@@ -419,6 +439,11 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
             }}
           >
             <Icon name="notifications" />
+            {notifCount > 0 && (
+              <span className="notifications-badge">
+                {notifCount > 9 ? '9+' : notifCount}
+              </span>
+            )}
           </button>
         </div>
 

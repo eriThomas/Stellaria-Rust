@@ -48,6 +48,13 @@ const LAUNCHER_LABEL: &str = "launcher";
 const PREVIEW_LABEL: &str = "preview";
 const SESSION_LABEL: &str = "session";
 const POPOUT_LABEL: &str = "popout";
+const OSD_LABEL: &str = "osd";
+const ISLAND_LABEL: &str = "island";
+
+static OSD_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static ISLAND_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static ESTIMATED_VOLUME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(50);
+static ESTIMATED_MUTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const DASH_LOGICAL_W: f64 = 1040.0;
 const DASH_LOGICAL_H: f64 = 560.0;
 const HOVER_TRIGGER_HALF_W: f64 = 450.0;
@@ -1218,22 +1225,211 @@ fn shell_open_settings(page: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn shell_volume_action(action: String) -> Result<(), String> {
+async fn shell_volume_action(app: AppHandle, action: String) -> Result<(), String> {
     #[link(name = "user32")]
     extern "system" {
         fn keybd_event(b_vk: u8, b_scan: u8, dw_flags: u32, dw_extra_info: usize);
     }
     const KEYEVENTF_KEYUP: u32 = 0x0002;
     let vk: u8 = match action.as_str() {
-        "mute" => 0xAD, // VK_VOLUME_MUTE
-        "down" => 0xAE, // VK_VOLUME_DOWN
-        "up" => 0xAF,   // VK_VOLUME_UP
+        "mute" => {
+            let next_muted = !ESTIMATED_MUTED.load(std::sync::atomic::Ordering::Relaxed);
+            ESTIMATED_MUTED.store(next_muted, std::sync::atomic::Ordering::Relaxed);
+            0xAD // VK_VOLUME_MUTE
+        }
+        "down" => {
+            let cur = ESTIMATED_VOLUME.load(std::sync::atomic::Ordering::Relaxed);
+            ESTIMATED_VOLUME.store(cur.saturating_sub(2), std::sync::atomic::Ordering::Relaxed);
+            ESTIMATED_MUTED.store(false, std::sync::atomic::Ordering::Relaxed);
+            0xAE // VK_VOLUME_DOWN
+        }
+        "up" => {
+            let cur = ESTIMATED_VOLUME.load(std::sync::atomic::Ordering::Relaxed);
+            ESTIMATED_VOLUME.store((cur + 2).min(100), std::sync::atomic::Ordering::Relaxed);
+            ESTIMATED_MUTED.store(false, std::sync::atomic::Ordering::Relaxed);
+            0xAF // VK_VOLUME_UP
+        }
         _ => return Err("unknown-volume-action".to_string()),
     };
     unsafe {
         keybd_event(vk, 0, 0, 0);
         keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
     }
+    let vol = ESTIMATED_VOLUME.load(std::sync::atomic::Ordering::Relaxed);
+    let muted = ESTIMATED_MUTED.load(std::sync::atomic::Ordering::Relaxed);
+    let _ = show_osd_window(&app, "volume", vol, muted);
+    Ok(())
+}
+
+fn show_osd_window<R: Runtime>(app: &AppHandle<R>, kind: &str, value: u32, muted: bool) -> Result<(), String> {
+    if win32_shell::is_session_locked() {
+        return Ok(());
+    }
+    let window = if let Some(existing) = app.get_webview_window(OSD_LABEL) {
+        existing
+    } else {
+        WebviewWindowBuilder::new(app, OSD_LABEL, WebviewUrl::App("osd.html".into()))
+            .title("Stellaria OSD")
+            .decorations(false)
+            .shadow(false)
+            .transparent(true)
+            .resizable(false)
+            .skip_taskbar(true)
+            .always_on_top(true)
+            .visible(false)
+            .focused(false)
+            .build()
+            .map_err(|e| e.to_string())?
+    };
+
+    if let Ok(handle) = window.hwnd() {
+        win32_shell::exclude_from_alt_tab(handle.0 as HWND);
+    }
+
+    let monitors = collect_monitors(app);
+    let mut pt = POINT { x: 0, y: 0 };
+    let cursor_mon = if unsafe { GetCursorPos(&mut pt) } != 0 {
+        monitor_at_point(&monitors, pt.x, pt.y)
+    } else {
+        None
+    };
+    if let Some(m) = cursor_mon
+        .or_else(|| monitors.iter().find(|m| m.primary))
+        .or_else(|| monitors.first())
+    {
+        let scale = m.scale_factor.max(1.0);
+        let w = (92.0 * scale).round() as i32;
+        let h = (260.0 * scale).round() as i32;
+        let x = m.bounds.right - w;
+        let y = m.bounds.top + (m.bounds.height() - h) / 2;
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+        let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
+        if let Ok(handle) = window.hwnd() {
+            unsafe {
+                ShowWindow(handle.0 as HWND, SW_SHOWNOACTIVATE);
+                SetWindowPos(
+                    handle.0 as HWND,
+                    HWND_TOPMOST,
+                    x,
+                    y,
+                    w,
+                    h,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+            }
+        }
+    }
+
+    let _ = app.emit(
+        "osd://show",
+        serde_json::json!({ "kind": kind, "value": value, "muted": muted }),
+    );
+    let seq = OSD_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let app_clone = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(2000));
+        if OSD_SEQ.load(std::sync::atomic::Ordering::Relaxed) == seq {
+            let _ = app_clone.emit("osd://hide", ());
+            std::thread::sleep(Duration::from_millis(280));
+            if OSD_SEQ.load(std::sync::atomic::Ordering::Relaxed) == seq {
+                if let Some(w) = app_clone.get_webview_window(OSD_LABEL) {
+                    let _ = w.hide();
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn island_show_toast(
+    app: AppHandle,
+    label: String,
+    title: String,
+    subtitle: Option<String>,
+    icon: Option<String>,
+) -> Result<(), String> {
+    if win32_shell::is_session_locked() {
+        return Ok(());
+    }
+    let window = if let Some(existing) = app.get_webview_window(ISLAND_LABEL) {
+        existing
+    } else {
+        WebviewWindowBuilder::new(&app, ISLAND_LABEL, WebviewUrl::App("island.html".into()))
+            .title("Stellaria Island")
+            .decorations(false)
+            .shadow(false)
+            .transparent(true)
+            .resizable(false)
+            .skip_taskbar(true)
+            .always_on_top(true)
+            .visible(false)
+            .focused(false)
+            .build()
+            .map_err(|e| e.to_string())?
+    };
+
+    if let Ok(handle) = window.hwnd() {
+        win32_shell::exclude_from_alt_tab(handle.0 as HWND);
+    }
+
+    let monitors = collect_monitors(&app);
+    let mut pt = POINT { x: 0, y: 0 };
+    let cursor_mon = if unsafe { GetCursorPos(&mut pt) } != 0 {
+        monitor_at_point(&monitors, pt.x, pt.y)
+    } else {
+        None
+    };
+    if let Some(m) = cursor_mon
+        .or_else(|| monitors.iter().find(|m| m.primary))
+        .or_else(|| monitors.first())
+    {
+        let scale = m.scale_factor.max(1.0);
+        let w = (460.0 * scale).round() as i32;
+        let h = (130.0 * scale).round() as i32;
+        let x = m.bounds.left + (m.bounds.width() - w) / 2;
+        let y = m.bounds.top;
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+        let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
+        if let Ok(handle) = window.hwnd() {
+            unsafe {
+                ShowWindow(handle.0 as HWND, SW_SHOWNOACTIVATE);
+                SetWindowPos(
+                    handle.0 as HWND,
+                    HWND_TOPMOST,
+                    x,
+                    y,
+                    w,
+                    h,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+            }
+        }
+    }
+
+    let _ = app.emit(
+        "island://show",
+        serde_json::json!({
+            "label": label,
+            "title": title,
+            "subtitle": subtitle.unwrap_or_default(),
+            "icon": icon.unwrap_or_else(|| "notifications".to_string()),
+        }),
+    );
+    let seq = ISLAND_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let app_clone = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(3200));
+        if ISLAND_SEQ.load(std::sync::atomic::Ordering::Relaxed) == seq {
+            let _ = app_clone.emit("island://hide", ());
+            std::thread::sleep(Duration::from_millis(280));
+            if ISLAND_SEQ.load(std::sync::atomic::Ordering::Relaxed) == seq {
+                if let Some(w) = app_clone.get_webview_window(ISLAND_LABEL) {
+                    let _ = w.hide();
+                }
+            }
+        }
+    });
     Ok(())
 }
 
@@ -1776,6 +1972,7 @@ fn main() {
             popout_get_notifications,
             session_toggle,
             session_hide,
+            island_show_toast,
             shell_open_settings,
             shell_volume_action,
             shell_get_keyboard_layout,

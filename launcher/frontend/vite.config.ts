@@ -16,6 +16,8 @@ export default defineConfig({
         preview: resolve(__dirname, 'preview.html'),
         session: resolve(__dirname, 'session.html'),
         popout: resolve(__dirname, 'popout.html'),
+        osd: resolve(__dirname, 'osd.html'),
+        island: resolve(__dirname, 'island.html'),
       },
       output: {
         entryFileNames: 'dashboard/[name].js',

@@ -398,6 +398,12 @@ export function PopoutApp() {
                               onClick={() => {
                                 setLayouts(prev => ({ ...prev, current: item.id }));
                                 void invoke('popout_set_keyboard_layout', { id: item.id });
+                                void invoke('island_show_toast', {
+                                  label: 'Keyboard layout',
+                                  title: item.name,
+                                  subtitle: item.language,
+                                  icon: 'keyboard',
+                                });
                               }}
                             >
                               <Icon name={selected ? 'radio_button_checked' : 'keyboard'} filled={selected} />
