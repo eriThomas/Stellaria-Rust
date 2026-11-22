@@ -1,179 +1,108 @@
-# Stellaria
-
-## Fork customizations
-
-This fork includes an integrated **Stellaria customizations** settings page and Launcher shortcut. It adds:
-
-- grouped taskbar apps with a window counter;
-- live previews for both single and grouped windows, captured by the native helper;
-- an option to show tasks from every monitor on every taskbar;
-- active-window visibility and active-click behavior controls;
-- a configurable 0–40 px visual frame, with borderless mode by default;
-- the native Windows Start menu on the Windows key by default;
-- English, Brazilian Portuguese and French interface text, with a safe English fallback for the remaining languages.
-
-The settings are stored by Stellaria itself and do not require the legacy external customizer or preview service.
+# Stellaria Rust
 
 ![Stellaria on a Windows 11 desktop](docs/images/promo/hero-en.jpg)
 
-Stellaria is an unofficial Windows 11 port of [Caelestia](https://github.com/caelestia-dots/shell), the Material You desktop shell
-for Hyprland. Windows keep their normal behaviour (snap, maximize, Win+arrows); the shell draws a rounded frame around
-them, a vertical bar, and drawers that slide out of the screen edges with Caelestia's expressive motion.
+**Stellaria Rust** is an incremental, performance-focused rewrite of [Stellaria](https://github.com/SMIDR76/stellaria-windows) (an unofficial Windows 11 port of [Caelestia](https://github.com/caelestia-dots/shell)) built on **Rust + Tauri 2 + React/TypeScript**.
 
-Built on [Zebar](https://github.com/glzr-io/zebar) for the widgets and a small native helper (`stellaria-helper.exe`,
-.NET 10) for everything a web page cannot do.
+The goal of this project is to replace the multi-process Zebar widget host and `.NET` runtime dependency with a **single authoritative Rust desktop shell (`stellaria-shell.exe`)** — delivering lower idle CPU and memory usage, faster startup, deterministic multi-monitor & mixed-DPI layout, and guaranteed Windows shell recovery, while preserving Stellaria's Material You design, expressive motion, and desktop panels.
+
+---
+
+## Why Rebuild in Rust?
+
+- **One authoritative core state:** A single Rust state machine (`stellaria-core`) owns monitor topology, DPI math, taskbar grouping, pins, focus, and fullscreen state — feeding lightweight per-monitor WebViews instead of every widget independently enumerating Windows.
+- **Zero hidden-state waste:** Telemetry, media polling, and animations pause automatically whenever a panel is hidden or the Windows session is locked (`WTS_SESSION_LOCK`).
+- **Native Win32 integration:** Direct `windows-sys` calls for taskbar enumeration, alpha-transparent icon extraction, live & cached minimized window previews (`PrintWindow`), per-monitor work-area reservation (`SPI_SETWORKAREA` + `SHAppBarMessage`), network adapter telemetry, keyboard layouts, Keep-Awake, and session recovery.
+- **Safety & recovery by design:** Every internal shell window is excluded from Windows `Alt+Tab` (`WS_EX_TOOLWINDOW`), native `Alt+Tab` is preserved, no administrator elevation is required, and a Rust `Drop` + panic hook guarantees the Windows taskbar and monitor work areas are restored on quit or crash.
+
+---
 
 ## Features
 
-- **Twelve languages**: English, French, Spanish, German, Brazilian Portuguese, Italian, Polish, Russian, Turkish,
-  Simplified Chinese, Japanese and Korean, following the Windows display language or chosen in the settings.
-- **Bar**: virtual desktops with an elastic indicator, open windows, a collapsible tray, weather, clock, keyboard
-  layout, sound, network and a notification bell. App icons can be tinted with the theme colour.
-- **Material You colours** taken from the wallpaper, nine variants and fourteen fixed schemes, light and dark modes.
-- **Dashboard** (hover the top edge or Win+Alt+A): calendar, weather, media with synced lyrics, live CPU, GPU,
-  memory, storage and network gauges.
-- **Launcher** (tap Win or Alt+Space): apps, open windows, calculator, emojis, clipboard history, wallpapers, colour
-  variants and schemes, and a shortcut cheat sheet (Win+Alt+K).
-- **Notification centre** with the Windows notification history grouped by app.
-- **Dynamic island** that drops from the top of the frame for a new track (with shuffle and repeat) or a notification.
-- **Sound panel** with per-application volume, **utilities** (radios, game mode, keep awake, captures, Pomodoro timer),
-  **brightness** over DDC/CI, **Alt+Tab switcher**, **hot corner** for Task View and an **idle screen**.
-- **Reduced motion** support, a **game mode** without animations.
-- **Recoverable**: the Windows taskbar comes back if anything stops, and the helper restarts a frozen Zebar.
+- **Multi-Monitor Vertical Taskbar (`bar.html`):**
+  - Per-monitor work-area reservation (including secondary displays, mixed DPI, and interior monitor edges).
+  - Stable app grouping with window count badges, pinning, true alpha-transparent `.exe` icons, live hover window previews (including cached live frames for minimized windows), and floating right-click context menus.
+  - Per-monitor fullscreen auto-hide: fullscreen games or videos hide *only* that monitor's bar while keeping other monitors usable.
+- **Top Dashboard (`dashboard.html`):**
+  - Hover the top screen edge or click the taskbar clock/weather pills to open; dismisses on outside click or `Esc`.
+  - Five tabs: **Home** (calendar, quick status, profile), **Media** (now playing, artwork, playback controls, synced LRCLIB lyrics), **Performance** (live native CPU, RAM, disk, network, and GPU gauges), **Weather** (Open-Meteo forecast), and **Tools** (grouped productivity & system utilities including Keep-Awake).
+- **Status Popouts (`popout.html`):**
+  - **Audio:** Master controls, per-app volume sliders, and mute toggles.
+  - **Network:** Active Windows adapter name, IPv4, MAC address, link speed, and live download/upload rates.
+  - **Keyboard:** Installed Windows keyboard layouts with one-click switching.
+  - **Notifications:** Notification history with unread badge on the taskbar, per-item dismiss, and clear all.
+- **App Launcher (`launcher.html`):** Fast Start Menu application catalog search and built-in calculator.
+- **Right-Edge Session Drawer (`session.html`):** Material You power drawer for Lock, Sleep, Sign out, Restart, and Shut down (always restoring the Windows shell first).
+- **OSD & Dynamic Island (`osd.html`, `island.html`):** Right-edge vertical Material 3 volume OSD pill and top-center toast notifications that never steal focus.
+- **Material You Theming & Localization:** Wallpaper-inspired Material 3 schemes, dark/light modes, and multi-language support (English, Brazilian Portuguese, French).
 
-## The Stellaria app
+---
 
-![The Stellaria app](docs/images/promo/launcher-en.jpg)
+## Architecture
 
-The setup adds a **Stellaria** entry to the Start menu: an app in the theme's colours to start, stop or repair the
-theme, see each part of the installation on its Installation page (Zebar, helper, widgets, start-up tasks) and
-install or repair them step by step, open its settings, apply colour presets from the signed community catalogue (and undo them), and read the
-project's news. Links such as `stellaria://apply/preset-nord` open it on the matching preset and ask before applying.
+| Layer | Crate / Directory | Responsibility |
+| :--- | :--- | :--- |
+| **Pure Core** | `launcher/core` (`stellaria-core`) | Authoritative `ShellState`, monitor & DPI placement math, `TaskbarModel` grouping/pinning/stable ordering, `AppBar` & fullscreen policy, versioned settings, weather/lyrics parsers. |
+| **Native Shell Host** | `launcher/shell` (`stellaria-shell`) | Tauri 2 host, Win32 window/task/icon/preview/network/session/fullscreen modules, allow-listed HTTPS services, tray menu, panic/drop shell recovery, and temporary headless `.NET` sidecar bridge for modules still being ported. |
+| **UI Surfaces** | `launcher/frontend` | React 19 + TypeScript + Vite multi-entry UI (`bar`, `dashboard`, `launcher`, `preview`, `popout`, `session`, `osd`, `island`) sharing Stellaria's Material You CSS tokens and motion curves. |
 
-![Six official colour presets](docs/images/promo/presets-en.jpg)
+---
 
-## Roadmap
+## Migration Roadmap
 
-![Stellaria roadmap](docs/images/promo/roadmap-en.jpg)
+- [x] **Milestone 0 — Baseline & Scaffolding:** Cargo workspace, React/TS/Vite/Vitest setup, structured JSONL logging, isolated app identity.
+- [x] **Milestone 1 — Top Dashboard Pilot:** Full dashboard parity, native telemetry, Open-Meteo weather, LRCLIB synced lyrics, top-edge hover auto-show/hide.
+- [x] **Milestone 2 — Rust State Core & Multi-Monitor Host:** Authoritative `ShellState`, 4-monitor mixed-DPI host, lock/unlock & sleep/resume recovery.
+- [x] **Milestone 3 — Standalone Rust Taskbar:** `stellaria-shell.exe`, native Win32 task grouping, pins, stable ordering, alpha icons, work-area reservation.
+- [x] **Milestone 4 — Previews & Context Actions:** Single/grouped/minimized cached previews, pin/close/close-all context menus, stale HWND protection.
+- [x] **Milestone 5 — Fullscreen, AppBars & Multi-Monitor:** Per-monitor fullscreen auto-hide, `SPI_SETWORKAREA` + `SHAppBarMessage`, guaranteed restoration.
+- [ ] **Milestone 6 — Tray & Remaining Surfaces:** Launcher, Session drawer, Status popouts, OSD, Island, and Notification badge are complete; **System Tray icons inside the bar** and **Master Volume / Audio Device switching** are next.
+- [ ] **Milestone 7 — Native Rust Replacement of `.NET` Modules:** Network adapter, telemetry, taskbar, icons, previews, keyboard layouts, weather, lyrics, and power are native Rust; porting **Audio (WASAPI)**, **GPU telemetry**, **System Info**, **Media (GSMTC)**, and **Notifications** next.
+- [ ] **Milestone 8 — Tools Tab:** Grouped Tools tab scaffolded; Crest-inspired Tools redesign planned.
+- [ ] **Milestone 9 — Legacy Removal & Release Hardening:** Performance baselines, installer migration, and removing legacy Zebar/`.NET` code once manual acceptance passes.
 
-Each step ships when it is ready and safe, so there are no dates.
+---
 
-1. **Foundations (done, v1.0):** bar, dashboard, launcher and utilities, Material You colours and schemes, a secure local
-   service with no telemetry, and a signed preset catalogue.
-2. **Stability and trust (in progress, v1.0.x):** one global fix for the reported bugs, reliable fonts after sleep,
-   publication on winget, and code signing.
-3. **Community catalogue (next):** themes and presets shared by the community, every submission checked automatically,
-   clear reporting and moderation, and a "Show your desktop" gallery.
-4. **Widget packs (then):** widgets made by the community, a human review of every version, permissions shown before
-   install, and a safe preview before installing.
-5. **Further out:** publishing from the Stellaria app, sharing a setup with one code, creator pages, and whatever your
-   feedback asks for.
+## Building & Running from Source
 
-Ideas and requests are welcome in [Discussions](https://github.com/SMIDR76/stellaria-windows/discussions).
+### Requirements
+- Windows 11 (x64)
+- [Rust](https://rustup.rs) (stable MSVC toolchain)
+- [Node.js](https://nodejs.org) 20+
 
-## Requirements
-
-- Windows 11 (Windows 10 22H2 may work, untested)
-- [Zebar](https://github.com/glzr-io/zebar) 3.3 or later: `winget install -e --id glzr-io.zebar`
-- To build the helper: the [.NET 10 SDK](https://dotnet.microsoft.com/download) (`winget install -e --id Microsoft.DotNet.SDK.10`).
-  Release archives ship a prebuilt helper instead. With the Visual Studio C++ build tools also installed, the helper
-  is compiled natively (NativeAOT) and uses about ten times less memory.
-- To build the Stellaria app: [Rust](https://rustup.rs) with the MSVC toolchain. `scripts\install.ps1` skips the app
-  when Rust is missing.
-
-How the pieces fit together is described in [docs/architecture.md](docs/architecture.md).
-
-No administrator rights are needed: everything installs in your user profile.
-
-## Install
-
-Download `StellariaSetup-<version>.exe` from the [latest release](https://github.com/SMIDR76/stellaria-windows/releases/latest)
-and run it. It installs for your account only, without administrator rights, in English or French. It shows what it
-changes on your PC before installing, installs Zebar and WebView2 when they are missing (Zebar installs for the whole
-machine, so Windows asks for permission once), and starts the theme.
-
-The setup is not code-signed yet, so Windows may warn about it:
-
-- **SmartScreen** ("Windows protected your PC"): choose **More info**, then **Run anyway**.
-- **Smart App Control** (Windows 11) blocks unsigned programs and has no exception: turn it off in Windows Security >
-  App & browser control > Smart App Control, or wait for a signed release.
-
-To check a download, compare its SHA-256 with `SHA256SUMS.txt` from the same release, or verify its build provenance
-with the GitHub CLI: `gh attestation verify StellariaSetup-<version>.exe -R SMIDR76/stellaria-windows`.
-
-Silent install: `StellariaSetup-<version>.exe /VERYSILENT /SUPPRESSMSGBOXES`. Add `/TASKS="startnow"` to leave the
-Alt+Tab switcher out, and `/LANG=fr` or `/LANG=en` to force the language.
-
-Uninstall from **Settings > Apps > Installed apps**, or with the Start menu entry. It stops the theme, gives the
-Windows taskbar and colours back (even if the helper was closed by force), removes the logon tasks and Zebar's
-start-up entries, and asks whether to keep your settings (silent uninstalls keep them).
-
-### Portable archive and building from source
-
-`Stellaria-<version>-portable.zip` holds the same files and the `scripts\install.ps1` / `scripts\uninstall.ps1`
-pair. From a clone, the same scripts build the helper first:
-
+### Build & Run
 ```powershell
-git clone https://github.com/SMIDR76/stellaria-windows
-cd stellaria-windows
-powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+# Debug build
+powershell -ExecutionPolicy Bypass -File launcher\shell\build.ps1
+
+# Optimized release build
+powershell -ExecutionPolicy Bypass -File launcher\shell\build.ps1 -Release
+
+# Run side-by-side (keeps Windows taskbar visible)
+.\launcher\target\release\stellaria-shell.exe
+
+# Run replacing the Windows taskbar (restored automatically on quit/crash)
+.\launcher\target\release\stellaria-shell.exe --replace-taskbar
 ```
 
-`scripts\build-release.ps1` builds the helper, the switcher, the portable archive, the setup (with Inno Setup 6.7 or
-later) and the checksums into `artifacts\`. Releases are described in [docs/releasing.md](docs/releasing.md).
+### Automated Tests
+```powershell
+# Rust core unit tests
+cargo test --manifest-path launcher\Cargo.toml -p stellaria-core
 
-## Shortcuts
+# Frontend unit & component tests (Vitest + React Testing Library)
+npm --prefix launcher\frontend test
+```
 
-| Keys | Action |
-| --- | --- |
-| Win (tap) or Alt+Space | Launcher |
-| Win+Alt+A | Dashboard |
-| Win+Alt+U | Utilities |
-| Win+Alt+P | Session menu |
-| Win+Alt+V | Clipboard history |
-| Win+Alt+. | Emojis |
-| Win+Alt+S | Theme settings |
-| Win+Alt+K | Shortcut cheat sheet |
-| Alt+E | Wallpapers |
-| Alt+Tab | Window switcher |
+---
 
-Pointer gestures: top edge for the dashboard, middle of the right edge for sound and brightness, bottom-right corner
-for the utilities, top-right corner for Task View.
+## Recovery & Privacy
 
-## If something goes wrong
+- **Instant Recovery:** Right-click the Stellaria tray icon and choose **Restore Windows Taskbar** or **Quit Stellaria Shell**. On exit or crash, `stellaria-shell.exe` automatically unregisters AppBars, restores every monitor's work area, and shows the Windows taskbar.
+- **No Telemetry & Strict Security:** No elevation required; frontend code never calls Win32 or arbitrary commands directly; all native actions are exposed through typed, allow-listed Tauri commands. External network requests are limited to Open-Meteo (weather) and LRCLIB (lyrics), both toggleable in settings.
 
-- Start menu > Stellaria > **Rétablir la barre des tâches** stops the theme and shows the Windows taskbar.
-- Start menu > Stellaria > **Relancer** starts it again.
-- Logs: `%LOCALAPPDATA%\Stellaria\logs\helper.log`.
-
-## Privacy and security
-
-The helper only listens on `127.0.0.1`, requires a per-session token and exposes a closed list of methods; widgets
-cannot run programs. Network use is limited to weather (Open-Meteo, plus ipinfo.io when no location is set) and
-lyrics (LRCLIB), both can be turned off in the theme settings, and to the Stellaria app checking GitHub for a signed
-update and reading its release notes. There is no telemetry; [PRIVACY.md](PRIVACY.md) lists every service, what it
-receives and how to turn it off. Notification contents are read from your own Windows history, kept in memory and never
-logged. See [docs/security.md](docs/security.md), [docs/protocol.md](docs/protocol.md) and
-[docs/configuration.md](docs/configuration.md).
-
-## Code signing policy
-
-Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by
-[SignPath Foundation](https://signpath.org).
-
-- Committers and approvers: [the repository owner](https://github.com/SMIDR76).
-- Reviewers: every change from outside the team goes through a pull request reviewed by a committer.
-- Every release is built from this repository by the [Release workflow](.github/workflows/release.yml) on GitHub-hosted
-  runners and signed only after a manual approval. Only files built from this repository are signed: the helper, the
-  Stellaria app, the Alt+Tab switcher and the setup. Third-party files (Zebar, which the setup installs separately,
-  and `e_sqlite3.dll`) keep their own publishers' signatures.
-- Privacy: see the [privacy policy](PRIVACY.md). Third-party services: Open-Meteo, ipinfo.io, LRCLIB, GitHub and
-  winget, under their own privacy policies.
-
-The setup details are in [docs/code-signing.md](docs/code-signing.md).
+---
 
 ## Credits
 
-[Caelestia](https://github.com/caelestia-dots/shell) by soramanew and contributors (design, colours, motion), Zebar
-and GlazeWM by glzr-io, Material Color Utilities by Google. Ideas from DankMaterialShell, Noctalia, end-4's dots,
-YASB and FluentFlyout. Licensed under GPL-3.0; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Built on the design language, CSS tokens, and original Windows port created by [SMIDR76/stellaria-windows](https://github.com/SMIDR76/stellaria-windows) and inspired by [Caelestia](https://github.com/caelestia-dots/shell).
