@@ -31,6 +31,7 @@ interface KeyboardLayoutsPayload {
 interface NetworkInfoPayload {
   connected: boolean;
   adapter: string;
+  adapterType?: string;
   ipv4: string;
   mac: string;
   linkSpeedMbps: number;
@@ -329,7 +330,15 @@ export function PopoutApp() {
                 {kind === 'network' && (
                   <div className="view" style={{ width: '320px' }}>
                     <div className="view-header">
-                      <Icon name={network?.connected ? 'lan' : 'signal_wifi_off'} />
+                      <Icon
+                        name={
+                          !network?.connected
+                            ? 'signal_wifi_off'
+                            : network.adapterType === 'wifi'
+                              ? 'wifi'
+                              : 'lan'
+                        }
+                      />
                       <span className="view-title">{network?.connected ? network.adapter : 'Offline'}</span>
                     </div>
                     <div className="info-grid">

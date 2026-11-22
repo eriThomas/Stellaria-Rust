@@ -5,6 +5,7 @@ mod helper_bridge;
 mod telemetry;
 mod web_services;
 mod win32_capture;
+mod win32_net;
 mod win32_shell;
 mod win32_tasks;
 
@@ -1516,6 +1517,7 @@ struct KeyboardLayoutsPayload {
 struct NetworkInfoPayload {
     connected: bool,
     adapter: String,
+    adapter_type: String,
     ipv4: String,
     mac: String,
     link_speed_mbps: u64,
@@ -1716,21 +1718,15 @@ fn popout_get_network_info(state: State<'_, ShellAppState>) -> Result<NetworkInf
         .map_err(|_| "busy".to_string())?
         .sample(None);
 
-    let ipv4 = std::net::UdpSocket::bind("0.0.0.0:0")
-        .and_then(|sock| {
-            sock.connect("8.8.8.8:80")?;
-            sock.local_addr()
-        })
-        .map(|addr| addr.ip().to_string())
-        .unwrap_or_else(|_| "—".to_string());
-    let connected = ipv4 != "—";
+    let info = win32_net::query_active_adapter();
 
     Ok(NetworkInfoPayload {
-        connected,
-        adapter: if connected { "Ethernet / Active Adapter".to_string() } else { "Offline".to_string() },
-        ipv4,
-        mac: "—".to_string(),
-        link_speed_mbps: if connected { 1000 } else { 0 },
+        connected: info.connected,
+        adapter: info.adapter,
+        adapter_type: info.adapter_type.to_string(),
+        ipv4: info.ipv4,
+        mac: info.mac,
+        link_speed_mbps: info.link_speed_mbps,
         rx_bytes_per_sec: sample.network.rx_bytes_per_sec as f64,
         tx_bytes_per_sec: sample.network.tx_bytes_per_sec as f64,
     })
