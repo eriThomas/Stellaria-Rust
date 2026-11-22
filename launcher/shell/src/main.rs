@@ -24,7 +24,7 @@ use stellaria_core::preview_cache::{PreviewCache, PreviewEntry};
 use stellaria_core::settings::{DashboardSettings, DashboardSettingsPatch};
 use stellaria_core::shell_state::{BarEdge, RecoveryReason, ShellSnapshot, ShellState};
 use stellaria_core::state::{DashboardCore, DashboardSnapshot, DashboardTab, OpenTrigger, VisibilityEvent};
-use stellaria_core::taskbar_model::{build_task_groups, PinStore, TaskGroup, WindowIdentity};
+use stellaria_core::taskbar_model::{build_task_groups, PinStore, StableTaskOrder, TaskGroup, WindowIdentity};
 use stellaria_core::telemetry::{GpuTelemetry, MediaAction, MediaSnapshot, SystemInfo, TelemetrySnapshot};
 use stellaria_core::weather::WeatherSnapshot;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -75,6 +75,7 @@ pub struct ShellAppState {
     pub dashboard: Mutex<DashboardCore>,
     pub sampler: Mutex<SystemMetricsSampler>,
     pub pins: Mutex<PinStore>,
+    pub task_order: Mutex<StableTaskOrder>,
     pub previews: Mutex<PreviewCache>,
     pub catalog: Mutex<Vec<CatalogApp>>,
     pub last_taskbar_payload: Mutex<Option<TaskbarStatePayload>>,
@@ -105,6 +106,7 @@ impl ShellAppState {
             dashboard: Mutex::new(DashboardCore::new(session_generation, settings, flags)),
             sampler: Mutex::new(SystemMetricsSampler::default()),
             pins: Mutex::new(pins),
+            task_order: Mutex::new(StableTaskOrder::default()),
             previews: Mutex::new(PreviewCache::default()),
             catalog: Mutex::new(Vec::new()),
             last_taskbar_payload: Mutex::new(None),
@@ -432,7 +434,10 @@ fn build_and_broadcast_tasks<R: Runtime>(app: &AppHandle<R>) {
     let windows = win32_tasks::enumerate_windows();
     let state = app.state::<ShellAppState>();
     let pins = state.pins.lock().map(|p| p.pins.clone()).unwrap_or_default();
-    let groups = build_task_groups(&windows, &pins, None, true);
+    let mut groups = build_task_groups(&windows, &pins, None, true);
+    if let Ok(mut order) = state.task_order.lock() {
+        order.stabilize(&mut groups);
+    }
 
     let mut icons = HashMap::new();
     for group in &groups {
@@ -464,12 +469,42 @@ fn build_and_broadcast_tasks<R: Runtime>(app: &AppHandle<R>) {
 
 fn start_background_loops(app: AppHandle) {
     // 1. Native Win32 task enumeration loop (1s interval, paused when locked)
+    // Also passively caches the active foreground window's thumbnail every 4s so minimized windows keep a live preview!
     let app_tasks = app.clone();
-    std::thread::spawn(move || loop {
-        if !win32_shell::is_session_locked() {
-            build_and_broadcast_tasks(&app_tasks);
+    std::thread::spawn(move || {
+        let mut tick: u64 = 0;
+        loop {
+            if !win32_shell::is_session_locked() {
+                build_and_broadcast_tasks(&app_tasks);
+                tick = tick.wrapping_add(1);
+                if tick % 4 == 1 {
+                    let state = app_tasks.state::<ShellAppState>();
+                    let active_win = state
+                        .last_taskbar_payload
+                        .lock()
+                        .ok()
+                        .and_then(|p| {
+                            p.as_ref().and_then(|payload| {
+                                payload
+                                    .groups
+                                    .iter()
+                                    .flat_map(|g| g.windows.iter())
+                                    .find(|w| w.active && !w.minimized)
+                                    .map(|w| (w.hwnd, w.pid, payload.session_generation))
+                            })
+                        });
+                    if let Some((hwnd, pid, gen)) = active_win {
+                        let entry = win32_capture::capture_window_preview(hwnd, pid, gen);
+                        if entry.png_base64.is_some() {
+                            if let Ok(mut cache) = state.previews.lock() {
+                                cache.insert(entry);
+                            }
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_secs(1));
         }
-        std::thread::sleep(Duration::from_secs(1));
     });
 
     // 2. Visibility-gated dashboard telemetry loop (ZERO sampling while dashboard is hidden)
@@ -614,10 +649,17 @@ fn dashboard_get_snapshot(app: AppHandle, state: State<'_, ShellAppState>) -> Re
 #[tauri::command]
 async fn dashboard_set_visibility(
     app: AppHandle,
+    state: State<'_, ShellAppState>,
     open: bool,
     monitor_id: Option<String>,
     trigger: OpenTrigger,
+    tab: Option<DashboardTab>,
 ) -> Result<VisibilityEvent, String> {
+    if let Some(target_tab) = tab {
+        if let Ok(mut dash) = state.dashboard.lock() {
+            let _ = dash.set_active_tab(target_tab);
+        }
+    }
     apply_dashboard_visibility(&app, open, monitor_id, trigger)
 }
 
@@ -819,7 +861,15 @@ async fn taskbar_capture_preview(
     })
     .await
     .map_err(|e| e.to_string())?;
-    if let Ok(mut cache) = state.previews.lock() {
+    if entry.png_base64.is_none() {
+        // Window is minimized or protected: return last known live frame from this session if available!
+        if let Ok(cache) = state.previews.lock() {
+            if let Some(mut frozen) = cache.get_last_bitmap(identity) {
+                frozen.fallback_reason = Some("minimized-cached".into());
+                return Ok(frozen);
+            }
+        }
+    } else if let Ok(mut cache) = state.previews.lock() {
         cache.insert(entry.clone());
     }
     Ok(entry)

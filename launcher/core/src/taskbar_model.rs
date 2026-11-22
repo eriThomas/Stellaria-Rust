@@ -154,6 +154,74 @@ pub fn build_task_groups(
     groups
 }
 
+/// Maintains first-seen stable ordering for unpinned apps and windows so focusing a window
+/// (which changes Win32 Z-order) never jumps apps to the top of the taskbar.
+#[derive(Debug, Default)]
+pub struct StableTaskOrder {
+    app_order: Vec<String>,
+    window_order: Vec<u64>,
+}
+
+impl StableTaskOrder {
+    pub fn stabilize(&mut self, groups: &mut Vec<TaskGroup>) {
+        let active_keys: HashSet<String> = groups.iter().map(|g| g.key.clone()).collect();
+        self.app_order.retain(|k| active_keys.contains(k));
+        for group in groups.iter() {
+            if !group.pinned && !self.app_order.contains(&group.key) {
+                self.app_order.push(group.key.clone());
+            }
+        }
+
+        let active_hwnds: HashSet<u64> = groups
+            .iter()
+            .flat_map(|g| g.windows.iter().map(|w| w.hwnd))
+            .collect();
+        self.window_order.retain(|h| active_hwnds.contains(h));
+        for group in groups.iter() {
+            for win in &group.windows {
+                if !self.window_order.contains(&win.hwnd) {
+                    self.window_order.push(win.hwnd);
+                }
+            }
+        }
+
+        let app_rank: HashMap<&str, usize> = self
+            .app_order
+            .iter()
+            .enumerate()
+            .map(|(i, k)| (k.as_str(), i))
+            .collect();
+        let win_rank: HashMap<u64, usize> = self
+            .window_order
+            .iter()
+            .enumerate()
+            .map(|(i, &h)| (h, i))
+            .collect();
+
+        // Keep pinned apps in their exact pin order first, then unpinned apps in stable first-seen order.
+        let mut pinned: Vec<TaskGroup> = Vec::new();
+        let mut unpinned: Vec<TaskGroup> = Vec::new();
+        for mut group in groups.drain(..) {
+            group
+                .windows
+                .sort_by_key(|w| win_rank.get(&w.hwnd).copied().unwrap_or(usize::MAX));
+            if group.pinned {
+                pinned.push(group);
+            } else {
+                unpinned.push(group);
+            }
+        }
+        unpinned.sort_by_key(|g| app_rank.get(g.key.as_str()).copied().unwrap_or(usize::MAX));
+        groups.extend(pinned);
+        groups.extend(unpinned);
+    }
+
+    pub fn clear(&mut self) {
+        self.app_order.clear();
+        self.window_order.clear();
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PinStore {
@@ -280,5 +348,34 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].window_count, 1);
         assert_eq!(groups[1].window_count, 1);
+    }
+
+    #[test]
+    fn stable_task_order_never_jumps_focused_app_to_top() {
+        let mut order = StableTaskOrder::default();
+        let first = vec![
+            win(1, "vivaldi.exe", "Web", "DISPLAY1", true),
+            win(2, "code.exe", "Editor", "DISPLAY1", false),
+            win(3, "terminal.exe", "Shell", "DISPLAY1", false),
+        ];
+        let mut g1 = build_task_groups(&first, &[], None, true);
+        order.stabilize(&mut g1);
+        assert_eq!(
+            g1.iter().map(|g| g.key.as_str()).collect::<Vec<_>>(),
+            vec!["vivaldi.exe", "code.exe", "terminal.exe"]
+        );
+
+        // Now terminal becomes foreground (EnumWindows returns it first in Z-order).
+        let second = vec![
+            win(3, "terminal.exe", "Shell", "DISPLAY1", true),
+            win(1, "vivaldi.exe", "Web", "DISPLAY1", false),
+            win(2, "code.exe", "Editor", "DISPLAY1", false),
+        ];
+        let mut g2 = build_task_groups(&second, &[], None, true);
+        order.stabilize(&mut g2);
+        assert_eq!(
+            g2.iter().map(|g| g.key.as_str()).collect::<Vec<_>>(),
+            vec!["vivaldi.exe", "code.exe", "terminal.exe"]
+        );
     }
 }

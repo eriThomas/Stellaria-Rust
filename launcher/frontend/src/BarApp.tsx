@@ -65,7 +65,7 @@ export interface BarBridge {
   togglePin: (exePath: string, exeName: string, displayName?: string) => Promise<boolean>;
   launchApp: (path: string) => Promise<void>;
   toggleLauncher: () => Promise<void>;
-  openDashboard: (monitorId: string | null) => Promise<void>;
+  openDashboard: (monitorId: string | null, tab?: 'dash' | 'media' | 'performance' | 'weather') => Promise<void>;
   showPreview?: (
     monitorId: string | null,
     groupKey: string,
@@ -89,8 +89,8 @@ const defaultBridge: BarBridge = {
     invoke<boolean>('taskbar_toggle_pin', { exePath, exeName, displayName }),
   launchApp: path => invoke<void>('taskbar_launch_app', { path }),
   toggleLauncher: () => invoke<void>('launcher_toggle'),
-  openDashboard: monitorId =>
-    invoke<void>('dashboard_set_visibility', { open: true, monitorId, trigger: 'click' }),
+  openDashboard: (monitorId, tab) =>
+    invoke<void>('dashboard_set_visibility', { open: true, monitorId, trigger: 'click', tab }),
   showPreview: (monitorId, groupKey, anchorY, mode = 'preview') =>
     invoke<void>('preview_show', { monitorId, groupKey, anchorY, mode }),
   sessionAction: action => invoke<void>('shell_session_action', { action }),
@@ -270,7 +270,7 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
           className="group weather state-layer"
           title="Weather"
           hidden={!weather}
-          onClick={() => void bridge.openDashboard(view?.monitor.id ?? null)}
+          onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'weather')}
         >
           <Icon name={weather?.current.icon ?? 'cloud'} />
           <span className="weather-temp">
@@ -282,7 +282,7 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
           type="button"
           className="group clock state-layer"
           title="Dashboard"
-          onClick={() => void bridge.openDashboard(view?.monitor.id ?? null)}
+          onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'dash')}
         >
           <Icon name="calendar_month" />
           <span className="clock-digits">{String(now.getHours()).padStart(2, '0')}</span>
@@ -294,31 +294,31 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
             type="button"
             className="status-item keyboard state-layer"
             title="Language"
-            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null)}
+            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'dash')}
           >
             US
           </button>
           <button
             type="button"
             className="status-item state-layer"
-            title="Audio"
-            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null)}
+            title="Media & Audio"
+            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'media')}
           >
             <Icon name="volume_up" />
           </button>
           <button
             type="button"
             className="status-item state-layer"
-            title="Network"
-            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null)}
+            title="Network & Performance"
+            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'performance')}
           >
             <Icon name="lan" />
           </button>
           <button
             type="button"
             className="status-item notifications state-layer"
-            title="Notifications"
-            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null)}
+            title="Dashboard"
+            onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'dash')}
           >
             <Icon name="notifications" />
           </button>
@@ -327,8 +327,8 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
         <button
           type="button"
           className="power state-layer"
-          title="Lock workstation"
-          onClick={() => void bridge.sessionAction?.('lock')}
+          title="Open Dashboard"
+          onClick={() => void bridge.openDashboard(view?.monitor.id ?? null, 'dash')}
         >
           <Icon name="power_settings_new" />
         </button>

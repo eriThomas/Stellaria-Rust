@@ -33,6 +33,14 @@ impl PreviewCache {
             .cloned()
     }
 
+    /// Returns the most recent captured bitmap for `identity` regardless of TTL — used for minimized windows.
+    pub fn get_last_bitmap(&self, identity: WindowIdentity) -> Option<PreviewEntry> {
+        self.entries
+            .iter()
+            .find(|e| e.identity == identity && e.png_base64.is_some())
+            .cloned()
+    }
+
     pub fn insert(&mut self, entry: PreviewEntry) {
         if let Some(pos) = self.entries.iter().position(|e| e.identity == entry.identity) {
             self.entries.remove(pos);
