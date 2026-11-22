@@ -13,6 +13,7 @@ export default defineConfig({
         dashboard: resolve(__dirname, 'dashboard.html'),
         bar: resolve(__dirname, 'bar.html'),
         launcher: resolve(__dirname, 'launcher.html'),
+        preview: resolve(__dirname, 'preview.html'),
       },
       output: {
         entryFileNames: 'dashboard/[name].js',

@@ -1,3 +1,4 @@
+pub mod appbar;
 pub mod flags;
 pub mod logging;
 pub mod lyrics;

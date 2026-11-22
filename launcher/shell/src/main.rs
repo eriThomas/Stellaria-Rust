@@ -45,6 +45,7 @@ use web_services::WebServicesState;
 
 const DASHBOARD_LABEL: &str = "dashboard";
 const LAUNCHER_LABEL: &str = "launcher";
+const PREVIEW_LABEL: &str = "preview";
 const DASH_LOGICAL_W: f64 = 1040.0;
 const DASH_LOGICAL_H: f64 = 560.0;
 const HOVER_TRIGGER_HALF_W: f64 = 450.0;
@@ -834,6 +835,155 @@ fn shell_set_bar_edge(app: AppHandle, state: State<'_, ShellAppState>, edge: Bar
     Ok(())
 }
 
+#[tauri::command]
+fn preview_show(
+    app: AppHandle,
+    state: State<'_, ShellAppState>,
+    monitor_id: Option<String>,
+    group_key: String,
+    anchor_y: f64,
+) -> Result<(), String> {
+    if win32_shell::is_session_locked() {
+        return Ok(());
+    }
+    let payload = state
+        .last_taskbar_payload
+        .lock()
+        .map_err(|_| "busy".to_string())?
+        .clone()
+        .ok_or_else(|| "no-tasks".to_string())?;
+    let group = payload
+        .groups
+        .into_iter()
+        .find(|g| g.key == group_key)
+        .ok_or_else(|| "group-not-found".to_string())?;
+    if group.windows.is_empty() {
+        return Ok(());
+    }
+    let icon_url = payload.icons.get(&group.key).cloned();
+
+    let monitors = collect_monitors(&app);
+    let mon = monitor_id
+        .as_deref()
+        .and_then(|id| monitors.iter().find(|m| m.id == id))
+        .or_else(|| monitors.iter().find(|m| m.primary))
+        .or_else(|| monitors.first())
+        .cloned();
+
+    let window = if let Some(existing) = app.get_webview_window(PREVIEW_LABEL) {
+        existing
+    } else {
+        WebviewWindowBuilder::new(&app, PREVIEW_LABEL, WebviewUrl::App("preview.html".into()))
+            .title("Stellaria Preview")
+            .decorations(false)
+            .shadow(false)
+            .transparent(true)
+            .resizable(false)
+            .skip_taskbar(true)
+            .always_on_top(true)
+            .visible(false)
+            .focused(false)
+            .build()
+            .map_err(|e| e.to_string())?
+    };
+
+    if let Ok(handle) = window.hwnd() {
+        win32_shell::exclude_from_alt_tab(handle.0 as HWND);
+    }
+
+    if let Some(m) = mon {
+        let scale = m.scale_factor.max(1.0);
+        let cols = group.windows.len().clamp(1, 3) as f64;
+        let width = ((cols * 244.0 + 24.0) * scale).round() as i32;
+        let rows = (group.windows.len().div_ceil(3)).clamp(1, 2) as f64;
+        let height = ((rows * 170.0 + 48.0) * scale).round() as i32;
+        let bar_w = (54.0 * scale).round() as i32;
+        let x = (m.bounds.left + bar_w).clamp(m.bounds.left, (m.bounds.right - width).max(m.bounds.left));
+        let desired_y = m.bounds.top + (anchor_y * scale).round() as i32 - height / 2;
+        let y = desired_y.clamp(m.bounds.top + 8, (m.bounds.bottom - height - 8).max(m.bounds.top));
+
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+        let _ = window.set_size(PhysicalSize::new(width.max(200) as u32, height.max(160) as u32));
+        if let Ok(handle) = window.hwnd() {
+            unsafe {
+                ShowWindow(handle.0 as HWND, SW_SHOWNOACTIVATE);
+                SetWindowPos(
+                    handle.0 as HWND,
+                    HWND_TOPMOST,
+                    x,
+                    y,
+                    width.max(200),
+                    height.max(160),
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+            }
+        }
+    }
+
+    let _ = window.show();
+    let _ = app.emit(
+        "preview://show",
+        serde_json::json!({ "group": group, "iconUrl": icon_url }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn preview_hide(app: AppHandle) {
+    if let Some(w) = app.get_webview_window(PREVIEW_LABEL) {
+        let _ = w.hide();
+    }
+}
+
+#[tauri::command]
+fn shell_set_keep_awake(enabled: bool) -> Result<(), String> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetThreadExecutionState(es_flags: u32) -> u32;
+    }
+    const ES_CONTINUOUS: u32 = 0x8000_0000;
+    const ES_SYSTEM_REQUIRED: u32 = 0x0000_0001;
+    const ES_DISPLAY_REQUIRED: u32 = 0x0000_0002;
+    let flags = if enabled {
+        ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+    } else {
+        ES_CONTINUOUS
+    };
+    unsafe {
+        SetThreadExecutionState(flags);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn shell_session_action(app: AppHandle, action: String) -> Result<(), String> {
+    match action.as_str() {
+        "lock" => {
+            #[link(name = "user32")]
+            extern "system" {
+                fn LockWorkStation() -> i32;
+            }
+            unsafe {
+                LockWorkStation();
+            }
+            Ok(())
+        }
+        "restoreShell" => {
+            if let Ok(mut hidden) = app.state::<ShellAppState>().windows_taskbar_hidden.lock() {
+                *hidden = false;
+            }
+            win32_shell::restore_windows_shell();
+            Ok(())
+        }
+        "quit" => {
+            win32_shell::restore_windows_shell();
+            app.exit(0);
+            Ok(())
+        }
+        _ => Err("unknown-session-action".to_string()),
+    }
+}
+
 fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let menu = Menu::new(app)?;
     menu.append(&MenuItem::with_id(app, "dashboard", "Open Dashboard", true, None::<&str>)?)?;
@@ -962,7 +1112,11 @@ fn main() {
             taskbar_capture_preview,
             launcher_get_apps,
             launcher_toggle,
-            launcher_hide
+            launcher_hide,
+            preview_show,
+            preview_hide,
+            shell_set_keep_awake,
+            shell_session_action
         ])
         .run(tauri::generate_context!())
         .expect("Stellaria Shell could not start");

@@ -6,6 +6,7 @@ import { HomeTab } from './components/HomeTab';
 import { MediaTab } from './components/MediaTab';
 import { PerformanceTab } from './components/PerformanceTab';
 import { SettingsPopover } from './components/SettingsPopover';
+import { ToolsTab } from './components/ToolsTab';
 import { WeatherTab } from './components/WeatherTab';
 import { resolveLanguage, translate } from './i18n/messages';
 import { useDashboardStore } from './store/dashboardStore';
@@ -25,6 +26,7 @@ export interface DashboardAppProps {
 
 export function DashboardApp({ bridge = tauriDashboardBridge }: DashboardAppProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
@@ -246,6 +248,7 @@ export function DashboardApp({ bridge = tauriDashboardBridge }: DashboardAppProp
   }, [bridge, visibility.open, visibility.monitorId]);
 
   const handleTabSelect = (tab: DashboardTab) => {
+    setToolsOpen(false);
     void bridge.setActiveTab(tab).then(applyVisibilityEvent);
   };
 
@@ -267,10 +270,28 @@ export function DashboardApp({ bridge = tauriDashboardBridge }: DashboardAppProp
           <button
             type="button"
             className="dashboard-settings-trigger"
+            style={{ right: 48 }}
+            aria-expanded={toolsOpen}
+            aria-label="Tools"
+            title="Tools (Pomodoro, Notes, To-Do, Water, Keep Awake)"
+            onClick={() => {
+              setToolsOpen(open => !open);
+              setSettingsOpen(false);
+            }}
+          >
+            <Icon name="handyman" />
+          </button>
+
+          <button
+            type="button"
+            className="dashboard-settings-trigger"
             aria-expanded={settingsOpen}
             aria-label={translate(lang, 'settings')}
             title={translate(lang, 'settings')}
-            onClick={() => setSettingsOpen(open => !open)}
+            onClick={() => {
+              setSettingsOpen(open => !open);
+              setToolsOpen(false);
+            }}
           >
             <Icon name="settings" />
           </button>
@@ -315,44 +336,48 @@ export function DashboardApp({ bridge = tauriDashboardBridge }: DashboardAppProp
             </nav>
 
             <div className="viewport" ref={viewportRef}>
-              <div className="track" ref={trackRef}>
-                {hydrated && visibility.open && (
-                  <>
-                    <HomeTab
-                      lang={lang}
-                      isOpen={visibility.open}
-                      clockSeconds={settings.clockSeconds}
-                      weatherEnabled={settings.weatherEnabled}
-                      weather={weather}
-                      weatherError={weatherError}
-                      sysinfo={sysinfo}
-                      telemetry={telemetry}
-                      media={media}
-                      onMediaAction={handleMediaAction}
-                    />
-                    <MediaTab
-                      lang={lang}
-                      media={media}
-                      lyricsEnabled={settings.lyricsEnabled}
-                      lyrics={lyrics}
-                      onMediaAction={handleMediaAction}
-                    />
-                    <PerformanceTab
-                      lang={lang}
-                      sysinfo={sysinfo}
-                      telemetry={telemetry}
-                      networkHistory={networkHistory}
-                    />
-                    <WeatherTab
-                      lang={lang}
-                      weatherEnabled={settings.weatherEnabled}
-                      weather={weather}
-                      weatherError={weatherError}
-                      onRefresh={() => refreshWeather(true)}
-                    />
-                  </>
-                )}
-              </div>
+              {hydrated && visibility.open && toolsOpen ? (
+                <ToolsTab />
+              ) : (
+                <div className="track" ref={trackRef}>
+                  {hydrated && visibility.open && (
+                    <>
+                      <HomeTab
+                        lang={lang}
+                        isOpen={visibility.open}
+                        clockSeconds={settings.clockSeconds}
+                        weatherEnabled={settings.weatherEnabled}
+                        weather={weather}
+                        weatherError={weatherError}
+                        sysinfo={sysinfo}
+                        telemetry={telemetry}
+                        media={media}
+                        onMediaAction={handleMediaAction}
+                      />
+                      <MediaTab
+                        lang={lang}
+                        media={media}
+                        lyricsEnabled={settings.lyricsEnabled}
+                        lyrics={lyrics}
+                        onMediaAction={handleMediaAction}
+                      />
+                      <PerformanceTab
+                        lang={lang}
+                        sysinfo={sysinfo}
+                        telemetry={telemetry}
+                        networkHistory={networkHistory}
+                      />
+                      <WeatherTab
+                        lang={lang}
+                        weatherEnabled={settings.weatherEnabled}
+                        weather={weather}
+                        weatherError={weatherError}
+                        onRefresh={() => refreshWeather(true)}
+                      />
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </section>

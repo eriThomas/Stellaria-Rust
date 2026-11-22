@@ -63,6 +63,8 @@ export interface BarBridge {
   launchApp: (path: string) => Promise<void>;
   toggleLauncher: () => Promise<void>;
   openDashboard: (monitorId: string | null) => Promise<void>;
+  showPreview?: (monitorId: string | null, groupKey: string, anchorY: number) => Promise<void>;
+  sessionAction?: (action: 'lock' | 'restoreShell' | 'quit') => Promise<void>;
 }
 
 const defaultBridge: BarBridge = {
@@ -79,6 +81,9 @@ const defaultBridge: BarBridge = {
   toggleLauncher: () => invoke<void>('launcher_toggle'),
   openDashboard: monitorId =>
     invoke<void>('dashboard_set_visibility', { open: true, monitorId, trigger: 'click' }),
+  showPreview: (monitorId, groupKey, anchorY) =>
+    invoke<void>('preview_show', { monitorId, groupKey, anchorY }),
+  sessionAction: action => invoke<void>('shell_session_action', { action }),
 };
 
 export interface BarAppProps {
@@ -224,6 +229,12 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
               type="button"
               title={`${group.displayName}${group.windowCount > 0 ? ` (${group.windowCount})` : ''}`}
               onClick={() => handleGroupClick(group)}
+              onMouseEnter={e => {
+                if (group.windowCount > 0 && bridge.showPreview) {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  void bridge.showPreview(view?.monitor.id ?? null, group.key, rect.top + rect.height / 2);
+                }
+              }}
               onContextMenu={e => {
                 e.preventDefault();
                 setContextGroup(curr => (curr?.key === group.key ? null : group));
