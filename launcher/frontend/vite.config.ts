@@ -15,6 +15,7 @@ export default defineConfig({
         launcher: resolve(__dirname, 'launcher.html'),
         preview: resolve(__dirname, 'preview.html'),
         session: resolve(__dirname, 'session.html'),
+        popout: resolve(__dirname, 'popout.html'),
       },
       output: {
         entryFileNames: 'dashboard/[name].js',

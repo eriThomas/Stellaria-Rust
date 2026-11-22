@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde::Serialize;
 use serde_json::{json, Value};
 use stellaria_core::telemetry::{GpuTelemetry, MediaAction, MediaSessionInfo, MediaSnapshot, SystemInfo};
 
@@ -24,10 +26,25 @@ struct PersistentConnection {
 }
 
 static CONNECTION: OnceLock<Mutex<Option<PersistentConnection>>> = OnceLock::new();
+static TOPIC_CACHE: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
 static NEXT_REQ_ID: AtomicU64 = AtomicU64::new(1);
 
 fn connection_slot() -> &'static Mutex<Option<PersistentConnection>> {
     CONNECTION.get_or_init(|| Mutex::new(None))
+}
+
+fn topic_cache() -> &'static Mutex<HashMap<String, Value>> {
+    TOPIC_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cache_if_state_message(msg: &Value) {
+    if msg["kind"] == "state" {
+        if let Some(topic) = msg["topic"].as_str() {
+            if let Ok(mut map) = topic_cache().lock() {
+                map.insert(topic.to_string(), msg["data"].clone());
+            }
+        }
+    }
 }
 
 fn read_credentials() -> Result<HelperCredentials, String> {
@@ -178,6 +195,7 @@ fn open_connection(creds: HelperCredentials) -> Result<PersistentConnection, Str
     while Instant::now() < deadline {
         let text = read_server_text_frame(&mut stream)?;
         let msg: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        cache_if_state_message(&msg);
         if msg["kind"] == "hello" {
             return Ok(PersistentConnection { creds, stream });
         }
@@ -201,6 +219,7 @@ fn send_on_connection(conn: &mut PersistentConnection, method: &str, params: &Va
     while Instant::now() < deadline {
         let text = read_server_text_frame(&mut conn.stream)?;
         let msg: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        cache_if_state_message(&msg);
         if msg["kind"] == "reply" && msg["id"] == req_id {
             if msg["ok"].as_bool().unwrap_or(false) {
                 return Ok(msg["data"].clone());
@@ -304,6 +323,80 @@ pub async fn send_media_action(action: MediaAction) -> Result<(), String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSessionInfo {
+    pub id: String,
+    pub name: String,
+    pub system: bool,
+    pub volume: u32,
+    pub muted: bool,
+    pub icon: Option<String>,
+}
+
+pub async fn fetch_audio_sessions() -> Result<Vec<AudioSessionInfo>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let data = request_helper_sync("audio.sessions", json!({}))?;
+        let arr = data.as_array().cloned().unwrap_or_default();
+        let mut out = Vec::with_capacity(arr.len());
+        for item in arr {
+            let Some(id) = item["id"].as_str() else { continue };
+            out.push(AudioSessionInfo {
+                id: id.to_string(),
+                name: item["name"].as_str().unwrap_or("App").to_string(),
+                system: item["system"].as_bool().unwrap_or(false),
+                volume: item["volume"].as_u64().unwrap_or(100).min(100) as u32,
+                muted: item["muted"].as_bool().unwrap_or(false),
+                icon: item["icon"].as_str().map(str::to_string),
+            });
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+pub async fn set_audio_session_volume(id: String, volume: u32) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        request_helper_sync("audio.setSessionVolume", json!({ "id": id, "volume": volume.min(100) })).map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+pub async fn set_audio_session_mute(id: String, muted: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        request_helper_sync("audio.setSessionMute", json!({ "id": id, "muted": muted })).map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+pub async fn set_keyboard_layout_helper(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        request_helper_sync("keyboard.setLayout", json!({ "id": id })).map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+pub async fn fetch_cached_topic(topic: &'static str) -> Value {
+    // Ping health lightly if cache is empty so we receive initial state topics
+    let existing = topic_cache().lock().ok().and_then(|m| m.get(topic).cloned());
+    if let Some(val) = existing {
+        return val;
+    }
+    let _ = tauri::async_runtime::spawn_blocking(|| {
+        let _ = request_helper_sync("health.ping", json!({}));
+    })
+    .await;
+    topic_cache()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(topic).cloned())
+        .unwrap_or(Value::Null)
 }
 
 #[cfg(test)]

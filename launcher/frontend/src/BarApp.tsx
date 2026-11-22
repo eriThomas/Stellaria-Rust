@@ -72,6 +72,11 @@ export interface BarBridge {
     anchorY: number,
     mode?: 'preview' | 'context',
   ) => Promise<void>;
+  showPopout?: (
+    monitorId: string | null,
+    kind: 'audio' | 'network' | 'keyboard' | 'notifications',
+    anchorY: number,
+  ) => Promise<void>;
   toggleSession?: (monitorId: string | null) => Promise<void>;
   openSettings?: (page: 'sound' | 'network-status' | 'regionlanguage' | 'notifications') => Promise<void>;
   volumeAction?: (action: 'mute' | 'up' | 'down') => Promise<void>;
@@ -96,6 +101,8 @@ const defaultBridge: BarBridge = {
     invoke<void>('dashboard_toggle', { monitorId, tab }),
   showPreview: (monitorId, groupKey, anchorY, mode = 'preview') =>
     invoke<void>('preview_show', { monitorId, groupKey, anchorY, mode }),
+  showPopout: (monitorId, kind, anchorY) =>
+    invoke<void>('popout_show', { monitorId, kind, anchorY }),
   toggleSession: monitorId => invoke<void>('session_toggle', { monitorId }),
   openSettings: page => invoke<void>('shell_open_settings', { page }),
   volumeAction: action => invoke<void>('shell_volume_action', { action }),
@@ -308,19 +315,53 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
           <button
             type="button"
             className="status-item keyboard state-layer"
-            title="Keyboard layout (click to open Language settings)"
-            onClick={() => void bridge.openSettings?.('regionlanguage')}
+            title="Keyboard layout"
+            onClick={e => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              void bridge.showPopout?.(view?.monitor.id ?? null, 'keyboard', rect.top + rect.height / 2);
+            }}
+            onMouseEnter={e => {
+              if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
+              const rect = e.currentTarget.getBoundingClientRect();
+              const anchorY = rect.top + rect.height / 2;
+              hoverTimerRef.current = window.setTimeout(() => {
+                void bridge.showPopout?.(view?.monitor.id ?? null, 'keyboard', anchorY);
+              }, 240);
+            }}
+            onMouseLeave={() => {
+              if (hoverTimerRef.current) {
+                window.clearTimeout(hoverTimerRef.current);
+                hoverTimerRef.current = null;
+              }
+            }}
           >
             {kbLayout}
           </button>
           <button
             type="button"
             className="status-item state-layer"
-            title="Volume (click: mute, scroll: adjust, right-click: Sound settings)"
-            onClick={() => void bridge.volumeAction?.('mute')}
+            title="Volume (click: mixer, scroll: adjust, right-click: mute)"
+            onClick={e => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              void bridge.showPopout?.(view?.monitor.id ?? null, 'audio', rect.top + rect.height / 2);
+            }}
+            onMouseEnter={e => {
+              if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
+              const rect = e.currentTarget.getBoundingClientRect();
+              const anchorY = rect.top + rect.height / 2;
+              hoverTimerRef.current = window.setTimeout(() => {
+                void bridge.showPopout?.(view?.monitor.id ?? null, 'audio', anchorY);
+              }, 240);
+            }}
+            onMouseLeave={() => {
+              if (hoverTimerRef.current) {
+                window.clearTimeout(hoverTimerRef.current);
+                hoverTimerRef.current = null;
+              }
+            }}
             onContextMenu={e => {
               e.preventDefault();
-              void bridge.openSettings?.('sound');
+              void bridge.volumeAction?.('mute');
             }}
             onWheel={e => {
               e.preventDefault();
@@ -332,16 +373,50 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
           <button
             type="button"
             className="status-item state-layer"
-            title="Network settings"
-            onClick={() => void bridge.openSettings?.('network-status')}
+            title="Network"
+            onClick={e => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              void bridge.showPopout?.(view?.monitor.id ?? null, 'network', rect.top + rect.height / 2);
+            }}
+            onMouseEnter={e => {
+              if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
+              const rect = e.currentTarget.getBoundingClientRect();
+              const anchorY = rect.top + rect.height / 2;
+              hoverTimerRef.current = window.setTimeout(() => {
+                void bridge.showPopout?.(view?.monitor.id ?? null, 'network', anchorY);
+              }, 240);
+            }}
+            onMouseLeave={() => {
+              if (hoverTimerRef.current) {
+                window.clearTimeout(hoverTimerRef.current);
+                hoverTimerRef.current = null;
+              }
+            }}
           >
             <Icon name="lan" />
           </button>
           <button
             type="button"
             className="status-item notifications state-layer"
-            title="Notification settings"
-            onClick={() => void bridge.openSettings?.('notifications')}
+            title="Notifications"
+            onClick={e => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              void bridge.showPopout?.(view?.monitor.id ?? null, 'notifications', rect.top + rect.height / 2);
+            }}
+            onMouseEnter={e => {
+              if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
+              const rect = e.currentTarget.getBoundingClientRect();
+              const anchorY = rect.top + rect.height / 2;
+              hoverTimerRef.current = window.setTimeout(() => {
+                void bridge.showPopout?.(view?.monitor.id ?? null, 'notifications', anchorY);
+              }, 240);
+            }}
+            onMouseLeave={() => {
+              if (hoverTimerRef.current) {
+                window.clearTimeout(hoverTimerRef.current);
+                hoverTimerRef.current = null;
+              }
+            }}
           >
             <Icon name="notifications" />
           </button>

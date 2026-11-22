@@ -93,10 +93,10 @@ describe('BarApp (Rust Taskbar)', () => {
     });
   });
 
-  it('wires bottom status controls (keyboard, volume, network, notifications, power drawer)', async () => {
+  it('wires bottom status controls to Stellaria popout panels and session drawer', async () => {
     const openDashboard = vi.fn().mockResolvedValue(undefined);
     const toggleSession = vi.fn().mockResolvedValue(undefined);
-    const openSettings = vi.fn().mockResolvedValue(undefined);
+    const showPopout = vi.fn().mockResolvedValue(undefined);
     const volumeAction = vi.fn().mockResolvedValue(undefined);
     const bridge: BarBridge = {
       getSnapshot: vi.fn().mockResolvedValue(baseSnapshot),
@@ -110,8 +110,8 @@ describe('BarApp (Rust Taskbar)', () => {
       toggleLauncher: vi.fn().mockResolvedValue(undefined),
       openDashboard,
       showPreview: vi.fn().mockResolvedValue(undefined),
+      showPopout,
       toggleSession,
-      openSettings,
       volumeAction,
       getKeyboardLayout: vi.fn().mockResolvedValue('PT'),
     };
@@ -120,23 +120,23 @@ describe('BarApp (Rust Taskbar)', () => {
 
     const kbdBtn = await screen.findByText('PT');
     fireEvent.click(kbdBtn);
-    expect(openSettings).toHaveBeenCalledWith('regionlanguage');
+    expect(showPopout).toHaveBeenCalledWith('\\\\.\\DISPLAY1', 'keyboard', expect.any(Number));
 
     const volBtn = screen.getByTitle(/Volume/i);
     fireEvent.click(volBtn);
-    expect(volumeAction).toHaveBeenCalledWith('mute');
+    expect(showPopout).toHaveBeenCalledWith('\\\\.\\DISPLAY1', 'audio', expect.any(Number));
     fireEvent.wheel(volBtn, { deltaY: -100 });
     expect(volumeAction).toHaveBeenCalledWith('up');
     fireEvent.contextMenu(volBtn);
-    expect(openSettings).toHaveBeenCalledWith('sound');
+    expect(volumeAction).toHaveBeenCalledWith('mute');
 
-    const netBtn = screen.getByTitle('Network settings');
+    const netBtn = screen.getByTitle('Network');
     fireEvent.click(netBtn);
-    expect(openSettings).toHaveBeenCalledWith('network-status');
+    expect(showPopout).toHaveBeenCalledWith('\\\\.\\DISPLAY1', 'network', expect.any(Number));
 
-    const notifBtn = screen.getByTitle('Notification settings');
+    const notifBtn = screen.getByTitle('Notifications');
     fireEvent.click(notifBtn);
-    expect(openSettings).toHaveBeenCalledWith('notifications');
+    expect(showPopout).toHaveBeenCalledWith('\\\\.\\DISPLAY1', 'notifications', expect.any(Number));
 
     const powerBtn = screen.getByTitle(/Session menu/i);
     fireEvent.click(powerBtn);

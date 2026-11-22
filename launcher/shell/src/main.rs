@@ -47,6 +47,7 @@ const DASHBOARD_LABEL: &str = "dashboard";
 const LAUNCHER_LABEL: &str = "launcher";
 const PREVIEW_LABEL: &str = "preview";
 const SESSION_LABEL: &str = "session";
+const POPOUT_LABEL: &str = "popout";
 const DASH_LOGICAL_W: f64 = 1040.0;
 const DASH_LOGICAL_H: f64 = 560.0;
 const HOVER_TRIGGER_HALF_W: f64 = 450.0;
@@ -1190,13 +1191,18 @@ fn shell_volume_action(action: String) -> Result<(), String> {
 
 #[tauri::command]
 fn shell_get_keyboard_layout() -> String {
+    let hkl = current_foreground_hkl();
+    lang_id_to_code((hkl & 0xFFFF) as u16)
+}
+
+fn current_foreground_hkl() -> usize {
     #[link(name = "user32")]
     extern "system" {
         fn GetForegroundWindow() -> HWND;
         fn GetWindowThreadProcessId(hwnd: HWND, pid: *mut u32) -> u32;
-        fn GetKeyboardLayout(id_thread: u32) -> isize;
+        fn GetKeyboardLayout(id_thread: u32) -> usize;
     }
-    let hkl = unsafe {
+    unsafe {
         let fg = GetForegroundWindow();
         let tid = if fg.is_null() {
             0
@@ -1204,9 +1210,12 @@ fn shell_get_keyboard_layout() -> String {
             GetWindowThreadProcessId(fg, std::ptr::null_mut())
         };
         GetKeyboardLayout(tid)
-    };
-    let primary_lang = (hkl as u32) & 0x03FF;
-    match primary_lang {
+    }
+}
+
+fn lang_id_to_code(lang_id: u16) -> String {
+    let primary = lang_id & 0x03FF;
+    match primary {
         0x16 => "PT".to_string(),
         0x09 => "US".to_string(),
         0x0C => "FR".to_string(),
@@ -1218,6 +1227,288 @@ fn shell_get_keyboard_layout() -> String {
         0x19 => "RU".to_string(),
         _ => "US".to_string(),
     }
+}
+
+fn lang_id_to_name(lang_id: u16) -> (&'static str, &'static str) {
+    match lang_id {
+        0x0416 => ("Portuguese (Brazil)", "pt-BR"),
+        0x0816 => ("Portuguese (Portugal)", "pt-PT"),
+        0x0409 => ("English (United States)", "en-US"),
+        0x0809 => ("English (United Kingdom)", "en-GB"),
+        0x040C => ("French (France)", "fr-FR"),
+        0x040A => ("Spanish (Spain)", "es-ES"),
+        0x0407 => ("German (Germany)", "de-DE"),
+        0x0410 => ("Italian (Italy)", "it-IT"),
+        0x0411 => ("Japanese", "ja-JP"),
+        _ => match lang_id & 0x03FF {
+            0x16 => ("Portuguese", "pt"),
+            0x09 => ("English", "en"),
+            0x0C => ("French", "fr"),
+            0x0A => ("Spanish", "es"),
+            0x07 => ("German", "de"),
+            _ => ("Keyboard layout", "en"),
+        },
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyboardLayoutItem {
+    id: String,
+    code: String,
+    name: String,
+    language: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyboardLayoutsPayload {
+    current: String,
+    items: Vec<KeyboardLayoutItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NetworkInfoPayload {
+    connected: bool,
+    adapter: String,
+    ipv4: String,
+    mac: String,
+    link_speed_mbps: u64,
+    rx_bytes_per_sec: f64,
+    tx_bytes_per_sec: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NotificationItem {
+    id: String,
+    app_id: String,
+    title: String,
+    body: String,
+    time: i64,
+}
+
+#[tauri::command]
+async fn popout_show(
+    app: AppHandle,
+    monitor_id: Option<String>,
+    kind: String,
+    anchor_y: f64,
+) -> Result<(), String> {
+    if win32_shell::is_session_locked() {
+        return Ok(());
+    }
+    if !matches!(kind.as_str(), "audio" | "network" | "keyboard" | "notifications") {
+        return Err("invalid-popout-kind".to_string());
+    }
+
+    let window = if let Some(existing) = app.get_webview_window(POPOUT_LABEL) {
+        existing
+    } else {
+        WebviewWindowBuilder::new(&app, POPOUT_LABEL, WebviewUrl::App("popout.html".into()))
+            .title("Stellaria Popout")
+            .decorations(false)
+            .shadow(false)
+            .transparent(true)
+            .resizable(false)
+            .skip_taskbar(true)
+            .always_on_top(true)
+            .visible(false)
+            .focused(false)
+            .build()
+            .map_err(|e| e.to_string())?
+    };
+
+    if let Ok(handle) = window.hwnd() {
+        win32_shell::exclude_from_alt_tab(handle.0 as HWND);
+    }
+
+    let monitors = collect_monitors(&app);
+    if let Some(m) = monitor_id
+        .as_deref()
+        .and_then(|id| monitors.iter().find(|m| m.id == id))
+        .or_else(|| monitors.iter().find(|m| m.primary))
+        .or_else(|| monitors.first())
+    {
+        let scale = m.scale_factor.max(1.0);
+        let (logical_w, logical_h) = match kind.as_str() {
+            "audio" => (396.0, 480.0),
+            "network" => (376.0, 355.0),
+            "keyboard" => (356.0, 340.0),
+            "notifications" => (396.0, 440.0),
+            _ => (380.0, 400.0),
+        };
+        let w = (logical_w * scale).round() as i32;
+        let h = (logical_h * scale).round() as i32;
+        let bar_w = (48.0 * scale).round() as i32;
+        let x = (m.bounds.left + bar_w).clamp(m.bounds.left, (m.bounds.right - w).max(m.bounds.left));
+        let desired_y = m.bounds.top + (anchor_y * scale).round() as i32 - h / 2;
+        let y = desired_y.clamp(m.bounds.top + 8, (m.bounds.bottom - h - 8).max(m.bounds.top));
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+        let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
+    }
+
+    let _ = window.show();
+    let _ = window.set_focus();
+    let _ = app.emit("popout://show", serde_json::json!({ "kind": kind }));
+    Ok(())
+}
+
+#[tauri::command]
+fn popout_hide(app: AppHandle) {
+    if let Some(w) = app.get_webview_window(POPOUT_LABEL) {
+        let _ = app.emit("popout://hide", ());
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(240));
+            let _ = w.hide();
+        });
+    }
+}
+
+#[tauri::command]
+async fn popout_get_audio_sessions() -> Result<Vec<helper_bridge::AudioSessionInfo>, String> {
+    helper_bridge::fetch_audio_sessions().await
+}
+
+#[tauri::command]
+async fn popout_set_audio_session_volume(id: String, volume: u32) -> Result<(), String> {
+    helper_bridge::set_audio_session_volume(id, volume).await
+}
+
+#[tauri::command]
+async fn popout_set_audio_session_mute(id: String, muted: bool) -> Result<(), String> {
+    helper_bridge::set_audio_session_mute(id, muted).await
+}
+
+#[tauri::command]
+async fn popout_get_keyboard_layouts() -> Result<KeyboardLayoutsPayload, String> {
+    let current_hkl = current_foreground_hkl();
+    let current_id = format!("{:08X}", current_hkl & 0xFFFF_FFFF);
+
+    let topic = helper_bridge::fetch_cached_topic("keyboard").await;
+    if let Some(arr) = topic["layouts"].as_array() {
+        if !arr.is_empty() {
+            let mut items = Vec::with_capacity(arr.len());
+            for item in arr {
+                let Some(id) = item["id"].as_str() else { continue };
+                let lang = item["languageTag"].as_str().unwrap_or("");
+                let name = item["name"].as_str().unwrap_or(lang);
+                let code = lang
+                    .split('-')
+                    .last()
+                    .unwrap_or(lang)
+                    .chars()
+                    .take(2)
+                    .collect::<String>()
+                    .to_uppercase();
+                items.push(KeyboardLayoutItem {
+                    id: id.to_string(),
+                    code,
+                    name: name.to_string(),
+                    language: lang.to_string(),
+                });
+            }
+            let current = topic["layout"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or(current_id);
+            return Ok(KeyboardLayoutsPayload { current, items });
+        }
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetKeyboardLayoutList(n_buff: i32, lp_list: *mut usize) -> i32;
+    }
+    let mut hkls = [0usize; 32];
+    let count = unsafe { GetKeyboardLayoutList(hkls.len() as i32, hkls.as_mut_ptr()) }.max(0) as usize;
+    let mut items = Vec::with_capacity(count);
+    for &hkl in &hkls[..count.min(32)] {
+        let lang_id = (hkl & 0xFFFF) as u16;
+        let (name, language) = lang_id_to_name(lang_id);
+        items.push(KeyboardLayoutItem {
+            id: format!("{:08X}", hkl & 0xFFFF_FFFF),
+            code: lang_id_to_code(lang_id),
+            name: name.to_string(),
+            language: language.to_string(),
+        });
+    }
+    Ok(KeyboardLayoutsPayload {
+        current: current_id,
+        items,
+    })
+}
+
+#[tauri::command]
+async fn popout_set_keyboard_layout(id: String) -> Result<(), String> {
+    if helper_bridge::set_keyboard_layout_helper(id.clone()).await.is_ok() {
+        return Ok(());
+    }
+    let hkl = usize::from_str_radix(id.trim_start_matches("0x"), 16).map_err(|_| "invalid-hkl".to_string())?;
+    #[link(name = "user32")]
+    extern "system" {
+        fn PostMessageW(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> i32;
+    }
+    const HWND_BROADCAST: HWND = 0xFFFF as HWND;
+    const WM_INPUTLANGCHANGEREQUEST: u32 = 0x0050;
+    unsafe {
+        PostMessageW(HWND_BROADCAST, WM_INPUTLANGCHANGEREQUEST, 0, hkl as isize);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn popout_get_network_info(state: State<'_, ShellAppState>) -> Result<NetworkInfoPayload, String> {
+    let sample = state
+        .sampler
+        .lock()
+        .map_err(|_| "busy".to_string())?
+        .sample(None);
+
+    let ipv4 = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|sock| {
+            sock.connect("8.8.8.8:80")?;
+            sock.local_addr()
+        })
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|_| "—".to_string());
+    let connected = ipv4 != "—";
+
+    Ok(NetworkInfoPayload {
+        connected,
+        adapter: if connected { "Ethernet / Active Adapter".to_string() } else { "Offline".to_string() },
+        ipv4,
+        mac: "—".to_string(),
+        link_speed_mbps: if connected { 1000 } else { 0 },
+        rx_bytes_per_sec: sample.network.rx_bytes_per_sec as f64,
+        tx_bytes_per_sec: sample.network.tx_bytes_per_sec as f64,
+    })
+}
+
+#[tauri::command]
+async fn popout_get_notifications() -> Result<Vec<NotificationItem>, String> {
+    let topic = helper_bridge::fetch_cached_topic("notifications").await;
+    let arr = topic["items"].as_array().cloned().unwrap_or_default();
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let id = item["id"]
+            .as_i64()
+            .map(|n| n.to_string())
+            .or_else(|| item["id"].as_str().map(str::to_string))
+            .unwrap_or_default();
+        if id.is_empty() {
+            continue;
+        }
+        out.push(NotificationItem {
+            id,
+            app_id: item["appId"].as_str().unwrap_or("").to_string(),
+            title: item["title"].as_str().unwrap_or("").to_string(),
+            body: item["body"].as_str().unwrap_or("").to_string(),
+            time: item["time"].as_i64().unwrap_or(0),
+        });
+    }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -1418,6 +1709,15 @@ fn main() {
             launcher_hide,
             preview_show,
             preview_hide,
+            popout_show,
+            popout_hide,
+            popout_get_audio_sessions,
+            popout_set_audio_session_volume,
+            popout_set_audio_session_mute,
+            popout_get_keyboard_layouts,
+            popout_set_keyboard_layout,
+            popout_get_network_info,
+            popout_get_notifications,
             session_toggle,
             session_hide,
             shell_open_settings,

@@ -9,7 +9,7 @@ $dist = Join-Path $launcher 'dist'
 $frontend = Join-Path $launcher 'frontend'
 
 New-Item -ItemType Directory -Force (Join-Path $dist 'shared\styles'), (Join-Path $dist 'shared\assets\fonts') | Out-Null
-Copy-Item (Join-Path $pack 'common.css'), (Join-Path $pack 'bar.css'), (Join-Path $pack 'dashboard.css'), (Join-Path $pack 'session.css'), (Join-Path $pack 'schemes.json') (Join-Path $dist 'shared')
+Copy-Item (Join-Path $pack 'common.css'), (Join-Path $pack 'bar.css'), (Join-Path $pack 'dashboard.css'), (Join-Path $pack 'session.css'), (Join-Path $pack 'popout.css'), (Join-Path $pack 'schemes.json') (Join-Path $dist 'shared')
 Copy-Item (Join-Path $pack 'styles\fonts.css'), (Join-Path $pack 'styles\dashboard-*.css') (Join-Path $dist 'shared\styles')
 Copy-Item (Join-Path $pack 'assets\fonts\*.woff2') (Join-Path $dist 'shared\assets\fonts')
 

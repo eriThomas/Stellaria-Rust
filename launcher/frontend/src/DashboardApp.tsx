@@ -205,9 +205,18 @@ export function DashboardApp({ bridge = tauriDashboardBridge }: DashboardAppProp
 
     refreshWeather(false);
 
+    const openedAt = Date.now();
+    const onBlur = () => {
+      if (Date.now() - openedAt > 200) {
+        void bridge.setVisibility(false, null, 'click');
+      }
+    };
+    window.addEventListener('blur', onBlur);
+
     return () => {
       cancelled = true;
       window.clearInterval(mediaTimer);
+      window.removeEventListener('blur', onBlur);
     };
   }, [visibility.open, sysinfo, bridge, setSysInfo, applyTelemetry, setMedia, refreshWeather]);
 
