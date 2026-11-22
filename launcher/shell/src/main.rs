@@ -231,6 +231,7 @@ fn sync_bar_windows<R: Runtime>(app: &AppHandle<R>, snapshot: &ShellSnapshot) {
             if let Ok(handle) = window.hwnd() {
                 win32_shell::unregister_appbar(handle.0 as HWND);
             }
+            win32_shell::restore_monitor_work_area(&view.monitor.id);
             let _ = window.hide();
         } else {
             if let Ok(handle) = window.hwnd() {
@@ -507,6 +508,38 @@ fn start_background_loops(app: AppHandle) {
                                 cache.insert(entry);
                             }
                         }
+                    }
+                }
+
+                // Per-monitor fullscreen auto-hide reconciliation (only hides the affected monitor's bar)
+                let own_hwnds: Vec<HWND> = app_tasks
+                    .webview_windows()
+                    .values()
+                    .filter_map(|w| w.hwnd().ok().map(|h| h.0 as HWND))
+                    .collect();
+                let monitors_copy = app_tasks
+                    .state::<ShellAppState>()
+                    .shell
+                    .lock()
+                    .map(|s| s.monitors().to_vec())
+                    .unwrap_or_default();
+                if !monitors_copy.is_empty() {
+                    let fs_ids = win32_shell::detect_fullscreen_monitors(&monitors_copy, &own_hwnds);
+                    let maybe_snapshot = app_tasks
+                        .state::<ShellAppState>()
+                        .shell
+                        .lock()
+                        .ok()
+                        .and_then(|mut s| {
+                            if s.reconcile_fullscreen_monitors(&fs_ids) {
+                                Some(s.snapshot())
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some(snap) = maybe_snapshot {
+                        sync_bar_windows(&app_tasks, &snap);
+                        let _ = app_tasks.emit("shell://snapshot", &snap);
                     }
                 }
             }

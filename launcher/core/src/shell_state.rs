@@ -323,6 +323,29 @@ impl ShellState {
         true
     }
 
+    pub fn reconcile_fullscreen_monitors(&mut self, fullscreen_ids: &HashSet<String>) -> bool {
+        let mut changed = false;
+        for mon in &mut self.monitors {
+            let next_fs = fullscreen_ids.contains(&mon.id);
+            if mon.fullscreen != next_fs {
+                mon.fullscreen = next_fs;
+                changed = true;
+            }
+            let entry = self.overlays.entry(mon.id.clone()).or_insert(MonitorOverlayState {
+                fullscreen: false,
+                covered: false,
+            });
+            if entry.fullscreen != next_fs {
+                entry.fullscreen = next_fs;
+                changed = true;
+            }
+        }
+        if changed {
+            self.revision += 1;
+        }
+        changed
+    }
+
     pub fn apply_helper_tasks(&mut self, tasks: Vec<TaskSummary>) -> bool {
         if self.tasks == tasks {
             return false;
@@ -468,5 +491,28 @@ mod tests {
         assert_eq!(snap.session_generation, 2);
         assert_eq!(snap.task_count, 0);
         assert_eq!(snap.last_recovery, RecoveryReason::LockUnlock);
+    }
+
+    #[test]
+    fn per_monitor_fullscreen_reconcile_isolates_affected_monitor() {
+        let mut state = ShellState::new(1, true);
+        state.reconcile_monitors(vec![
+            mon(r"\\.\DISPLAY1", 0, 0, 1920, 1080, 1.0, true),
+            mon(r"\\.\DISPLAY2", 1920, 0, 2560, 1440, 1.25, false),
+        ]);
+        let mut fs = HashSet::new();
+        fs.insert(r"\\.\DISPLAY2".to_string());
+        assert!(state.reconcile_fullscreen_monitors(&fs));
+        assert!(!state.reconcile_fullscreen_monitors(&fs)); // idempotent
+
+        let snap = state.snapshot();
+        let d1 = snap.monitors.iter().find(|m| m.monitor.id == r"\\.\DISPLAY1").unwrap();
+        let d2 = snap.monitors.iter().find(|m| m.monitor.id == r"\\.\DISPLAY2").unwrap();
+        assert!(!d1.monitor.fullscreen);
+        assert!(d2.monitor.fullscreen);
+
+        assert!(state.reconcile_fullscreen_monitors(&HashSet::new()));
+        let snap2 = state.snapshot();
+        assert!(!snap2.monitors.iter().find(|m| m.monitor.id == r"\\.\DISPLAY2").unwrap().monitor.fullscreen);
     }
 }

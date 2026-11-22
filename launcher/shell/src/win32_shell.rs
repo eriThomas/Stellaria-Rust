@@ -116,6 +116,23 @@ pub fn reserve_monitor_work_area(monitor: &MonitorInfo, edge: BarEdge, bar_w: i3
     }
 }
 
+pub fn restore_monitor_work_area(monitor_id: &str) {
+    let orig = work_area_map()
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(monitor_id).map(|(orig, _)| orig));
+    if let Some(mut orig) = orig {
+        unsafe {
+            SystemParametersInfoW(
+                SPI_SETWORKAREA,
+                0,
+                &mut orig as *mut RECT as *mut _,
+                SPIF_SENDCHANGE,
+            );
+        }
+    }
+}
+
 pub fn restore_all_work_areas() {
     let entries: Vec<RECT> = work_area_map()
         .lock()
@@ -287,6 +304,47 @@ pub fn is_true_fullscreen(own: HWND) -> bool {
     let style = unsafe { GetWindowLongPtrW(foreground, GWL_STYLE) } as u32;
     let has_caption = (style & WS_CAPTION) == WS_CAPTION;
     !has_caption && covers_its_monitor(foreground)
+}
+
+/// Detects which monitors currently have a true fullscreen foreground window (games, borderless fullscreen,
+/// browser fullscreen video). Only the monitor hosting that fullscreen window is marked fullscreen so bars
+/// on the other monitors stay visible and clickable.
+pub fn detect_fullscreen_monitors(
+    monitors: &[MonitorInfo],
+    own_hwnds: &[HWND],
+) -> std::collections::HashSet<String> {
+    let mut result = std::collections::HashSet::new();
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.is_null()
+        || own_hwnds.contains(&foreground)
+        || DESKTOP_CLASSES.contains(&class_name(foreground).as_str())
+    {
+        return result;
+    }
+    let style = unsafe { GetWindowLongPtrW(foreground, GWL_STYLE) } as u32;
+    let has_caption = (style & WS_CAPTION) == WS_CAPTION;
+    let mut quns = 0;
+    let d3d_fs = unsafe { SHQueryUserNotificationState(&mut quns) } == 0
+        && quns == QUNS_RUNNING_D3D_FULL_SCREEN;
+    if has_caption && !d3d_fs {
+        return result;
+    }
+
+    let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    if unsafe { GetWindowRect(foreground, &mut rect) } == 0 {
+        return result;
+    }
+    for mon in monitors {
+        let b = mon.bounds;
+        if rect.left <= b.left
+            && rect.top <= b.top
+            && rect.right >= b.right
+            && rect.bottom >= b.bottom
+        {
+            result.insert(mon.id.clone());
+        }
+    }
+    result
 }
 
 unsafe extern "system" fn enum_secondary_taskbars(hwnd: HWND, lparam: LPARAM) -> BOOL {
