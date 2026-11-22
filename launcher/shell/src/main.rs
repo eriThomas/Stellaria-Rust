@@ -221,33 +221,24 @@ fn sync_bar_windows<R: Runtime>(app: &AppHandle<R>, snapshot: &ShellSnapshot) {
         };
 
         if let Ok(handle) = window.hwnd() {
-            let hwnd = handle.0 as HWND;
-            win32_shell::exclude_from_alt_tab(hwnd);
-            if view.monitor.fullscreen {
-                win32_shell::unregister_appbar(hwnd);
-            } else {
-                win32_shell::register_and_reserve_appbar(
-                    hwnd,
-                    snapshot.bar_edge,
-                    p.x,
-                    p.y,
-                    p.width as i32,
-                    p.height as i32,
-                );
-            }
+            win32_shell::exclude_from_alt_tab(handle.0 as HWND);
         }
 
         let _ = window.set_position(PhysicalPosition::new(p.x, p.y));
         let _ = window.set_size(PhysicalSize::new(p.width, p.height));
 
         if view.monitor.fullscreen {
+            if let Ok(handle) = window.hwnd() {
+                win32_shell::unregister_appbar(handle.0 as HWND);
+            }
             let _ = window.hide();
         } else {
             if let Ok(handle) = window.hwnd() {
+                let hwnd = handle.0 as HWND;
                 unsafe {
-                    ShowWindow(handle.0 as HWND, SW_SHOWNOACTIVATE);
+                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                     SetWindowPos(
-                        handle.0 as HWND,
+                        hwnd,
                         HWND_TOPMOST,
                         p.x,
                         p.y,
@@ -256,6 +247,20 @@ fn sync_bar_windows<R: Runtime>(app: &AppHandle<R>, snapshot: &ShellSnapshot) {
                         SWP_NOACTIVATE | SWP_SHOWWINDOW,
                     );
                 }
+                win32_shell::reserve_monitor_work_area(
+                    &view.monitor,
+                    snapshot.bar_edge,
+                    p.width as i32,
+                    p.height as i32,
+                );
+                win32_shell::register_and_reserve_appbar(
+                    hwnd,
+                    snapshot.bar_edge,
+                    p.x,
+                    p.y,
+                    p.width as i32,
+                    p.height as i32,
+                );
             }
             let _ = window.show();
         }
@@ -1096,6 +1101,11 @@ async fn session_toggle(app: AppHandle, monitor_id: Option<String>) -> Result<()
             let y = m.bounds.top + (m.bounds.height() - h) / 2;
             let _ = existing.set_position(PhysicalPosition::new(x, y));
             let _ = existing.set_size(PhysicalSize::new(w as u32, h as u32));
+            if let Ok(handle) = existing.hwnd() {
+                unsafe {
+                    SetWindowPos(handle.0 as HWND, HWND_TOPMOST, x, y, w, h, SWP_SHOWWINDOW);
+                }
+            }
         }
         let _ = existing.show();
         let _ = existing.set_focus();
@@ -1134,6 +1144,11 @@ async fn session_toggle(app: AppHandle, monitor_id: Option<String>) -> Result<()
         let y = m.bounds.top + (m.bounds.height() - h) / 2;
         let _ = window.set_position(PhysicalPosition::new(x, y));
         let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
+        if let Ok(handle) = window.hwnd() {
+            unsafe {
+                SetWindowPos(handle.0 as HWND, HWND_TOPMOST, x, y, w, h, SWP_SHOWWINDOW);
+            }
+        }
     }
     let _ = window.show();
     let _ = window.set_focus();
@@ -1333,20 +1348,26 @@ async fn popout_show(
     {
         let scale = m.scale_factor.max(1.0);
         let (logical_w, logical_h) = match kind.as_str() {
-            "audio" => (396.0, 480.0),
-            "network" => (376.0, 355.0),
-            "keyboard" => (356.0, 340.0),
-            "notifications" => (396.0, 440.0),
-            _ => (380.0, 400.0),
+            "audio" => (396.0, 440.0),
+            "network" => (376.0, 320.0),
+            "keyboard" => (356.0, 310.0),
+            "notifications" => (396.0, 380.0),
+            _ => (380.0, 360.0),
         };
         let w = (logical_w * scale).round() as i32;
         let h = (logical_h * scale).round() as i32;
-        let bar_w = (48.0 * scale).round() as i32;
+        let bar_w = (52.0 * scale).round() as i32;
         let x = (m.bounds.left + bar_w).clamp(m.bounds.left, (m.bounds.right - w).max(m.bounds.left));
-        let desired_y = m.bounds.top + (anchor_y * scale).round() as i32 - h / 2;
+        let anchor_phys_y = m.bounds.top + (anchor_y * scale).round() as i32;
+        let desired_y = anchor_phys_y - h + (28.0 * scale).round() as i32;
         let y = desired_y.clamp(m.bounds.top + 8, (m.bounds.bottom - h - 8).max(m.bounds.top));
         let _ = window.set_position(PhysicalPosition::new(x, y));
         let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
+        if let Ok(handle) = window.hwnd() {
+            unsafe {
+                SetWindowPos(handle.0 as HWND, HWND_TOPMOST, x, y, w, h, SWP_SHOWWINDOW);
+            }
+        }
     }
 
     let _ = window.show();
@@ -1630,6 +1651,7 @@ fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             }
             "quit" => {
                 win32_shell::restore_windows_shell();
+                helper_bridge::stop_helper_if_spawned();
                 app.exit(0);
             }
             _ => {}
@@ -1673,6 +1695,7 @@ fn main() {
         .manage(app_state)
         .manage(WebServicesState::default())
         .setup(move |app| {
+            helper_bridge::ensure_helper_running();
             create_tray(app.handle())?;
             if replace_taskbar {
                 if let Ok(mut hidden) = app.state::<ShellAppState>().windows_taskbar_hidden.lock() {

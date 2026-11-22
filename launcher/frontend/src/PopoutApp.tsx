@@ -217,7 +217,7 @@ export function PopoutApp() {
   return (
     <div
       className="drawer from-left"
-      style={{ width: '100%', height: '100%' }}
+      style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'flex-end' }}
       onMouseDown={e => {
         if (e.target === e.currentTarget) hide();
       }}

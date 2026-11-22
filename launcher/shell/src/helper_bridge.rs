@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -13,6 +16,84 @@ use crate::environment;
 
 const HELPER_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+static HELPER_SPAWNED_BY_US: AtomicBool = AtomicBool::new(false);
+static SPAWNED_HELPER_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+
+fn find_helper_binary() -> Option<PathBuf> {
+    let mut candidates = vec![
+        environment("USERPROFILE")
+            .join(".stellaria")
+            .join("bin")
+            .join("stellaria-helper.exe"),
+    ];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("stellaria-helper.exe"));
+            // Dev fallback: launcher/target/{debug,release}/stellaria-shell.exe -> ../../helper/...
+            if let Some(repo_root) = dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+                candidates.push(
+                    repo_root
+                        .join("helper")
+                        .join("src")
+                        .join("Stellaria.Helper")
+                        .join("bin")
+                        .join("Release")
+                        .join("net10.0-windows10.0.22621.0")
+                        .join("stellaria-helper.exe"),
+                );
+                candidates.push(
+                    repo_root
+                        .join("helper")
+                        .join("src")
+                        .join("Stellaria.Helper")
+                        .join("bin")
+                        .join("Debug")
+                        .join("net10.0-windows10.0.22621.0")
+                        .join("stellaria-helper.exe"),
+                );
+            }
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+/// Starts the headless `.NET` compatibility helper (`stellaria-helper.exe`, with NO `--start` arg so Zebar is never launched)
+/// if no helper is currently reachable on loopback.
+pub fn ensure_helper_running() {
+    if let Ok(creds) = read_credentials() {
+        let addr = SocketAddr::from(([127, 0, 0, 1], creds.port));
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
+            return;
+        }
+    }
+    let Some(path) = find_helper_binary() else {
+        return;
+    };
+    if Command::new(&path).creation_flags(CREATE_NO_WINDOW).spawn().is_ok() {
+        HELPER_SPAWNED_BY_US.store(true, Ordering::Release);
+        if let Ok(mut slot) = SPAWNED_HELPER_PATH.get_or_init(|| Mutex::new(None)).lock() {
+            *slot = Some(path);
+        }
+    }
+}
+
+pub fn stop_helper_if_spawned() {
+    if !HELPER_SPAWNED_BY_US.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let path = SPAWNED_HELPER_PATH
+        .get()
+        .and_then(|m| m.lock().ok())
+        .and_then(|g| g.clone());
+    if let Some(path) = path {
+        let _ = Command::new(path)
+            .arg("--quit")
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
+}
 
 #[derive(Clone, PartialEq, Eq)]
 struct HelperCredentials {

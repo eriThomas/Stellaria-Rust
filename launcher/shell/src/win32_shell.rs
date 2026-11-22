@@ -4,6 +4,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use stellaria_core::monitors::MonitorInfo;
 use stellaria_core::shell_state::{BarEdge, RecoveryReason};
 use windows_sys::core::BOOL;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -22,11 +23,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, FindWindowW,
     GetClassNameW, GetForegroundWindow, GetMessageW, GetWindowLongPtrW, GetWindowRect,
     RegisterClassW, RegisterWindowMessageW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    TranslateMessage, GWL_EXSTYLE, GWL_STYLE, MSG, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
-    WM_DISPLAYCHANGE, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WNDCLASSW, WS_CAPTION,
-    WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WTS_SESSION_LOCK,
-    WTS_SESSION_UNLOCK,
+    SystemParametersInfoW, TranslateMessage, GWL_EXSTYLE, GWL_STYLE, MSG, PBT_APMRESUMEAUTOMATIC,
+    PBT_APMRESUMESUSPEND, SPIF_SENDCHANGE, SPI_SETWORKAREA, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WM_DISPLAYCHANGE, WM_POWERBROADCAST,
+    WM_WTSSESSION_CHANGE, WNDCLASSW, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_POPUP, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
 };
 
 const DESKTOP_CLASSES: [&str; 4] = ["Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"];
@@ -36,9 +37,100 @@ static SESSION_LOCKED: AtomicBool = AtomicBool::new(false);
 static RECOVERY_TX: OnceLock<mpsc::Sender<RecoveryReason>> = OnceLock::new();
 static TASKBAR_CREATED_MSG: OnceLock<u32> = OnceLock::new();
 static REGISTERED_APPBARS: OnceLock<Mutex<HashMap<usize, (i32, i32, i32, i32)>>> = OnceLock::new();
+static SAVED_WORK_AREAS: OnceLock<Mutex<HashMap<String, (RECT, RECT)>>> = OnceLock::new();
 
 fn appbar_map() -> &'static Mutex<HashMap<usize, (i32, i32, i32, i32)>> {
     REGISTERED_APPBARS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn work_area_map() -> &'static Mutex<HashMap<String, (RECT, RECT)>> {
+    SAVED_WORK_AREAS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Reserves desktop work area directly on `monitor` using `SPI_SETWORKAREA`.
+/// Unlike `SHAppBarMessage`, `SPI_SETWORKAREA` works on ALL monitors — including
+/// interior edges between monitors and mixed-DPI secondary displays.
+pub fn reserve_monitor_work_area(monitor: &MonitorInfo, edge: BarEdge, bar_w: i32, bar_h: i32) {
+    let mut map = match work_area_map().lock() {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    let (original, last_applied) = map.get(&monitor.id).copied().unwrap_or_else(|| {
+        let orig = RECT {
+            left: monitor.work_area.left,
+            top: monitor.work_area.top,
+            right: monitor.work_area.right,
+            bottom: monitor.work_area.bottom,
+        };
+        (orig, orig)
+    });
+
+    let mut desired = original;
+    match edge {
+        BarEdge::Left => {
+            let min_left = monitor.bounds.left + bar_w;
+            if desired.left < min_left {
+                desired.left = min_left;
+            }
+        }
+        BarEdge::Right => {
+            let max_right = monitor.bounds.right - bar_w;
+            if desired.right > max_right {
+                desired.right = max_right;
+            }
+        }
+        BarEdge::Top => {
+            let min_top = monitor.bounds.top + bar_h;
+            if desired.top < min_top {
+                desired.top = min_top;
+            }
+        }
+        BarEdge::Bottom => {
+            let max_bottom = monitor.bounds.bottom - bar_h;
+            if desired.bottom > max_bottom {
+                desired.bottom = max_bottom;
+            }
+        }
+    }
+
+    if desired.left == last_applied.left
+        && desired.top == last_applied.top
+        && desired.right == last_applied.right
+        && desired.bottom == last_applied.bottom
+        && map.contains_key(&monitor.id)
+    {
+        return;
+    }
+
+    map.insert(monitor.id.clone(), (original, desired));
+    drop(map);
+
+    unsafe {
+        let mut rc = desired;
+        SystemParametersInfoW(
+            SPI_SETWORKAREA,
+            0,
+            &mut rc as *mut RECT as *mut _,
+            SPIF_SENDCHANGE,
+        );
+    }
+}
+
+pub fn restore_all_work_areas() {
+    let entries: Vec<RECT> = work_area_map()
+        .lock()
+        .map(|mut map| map.drain().map(|(_, (orig, _))| orig).collect())
+        .unwrap_or_default();
+    for mut orig in entries {
+        unsafe {
+            SystemParametersInfoW(
+                SPI_SETWORKAREA,
+                0,
+                &mut orig as *mut RECT as *mut _,
+                SPIF_SENDCHANGE,
+            );
+        }
+    }
 }
 
 fn edge_to_abe(edge: BarEdge) -> u32 {
@@ -134,6 +226,7 @@ pub fn unregister_all_appbars() {
             SHAppBarMessage(ABM_REMOVE, &mut abd);
         }
     }
+    restore_all_work_areas();
 }
 
 pub fn is_session_locked() -> bool {
