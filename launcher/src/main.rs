@@ -2,9 +2,12 @@
 
 mod dashboard;
 mod foreground;
+mod helper_bridge;
 mod installation;
+mod telemetry;
 mod tray;
 mod update;
+mod web_services;
 
 use std::io::{Read, Seek, SeekFrom};
 use std::os::windows::process::CommandExt;
@@ -150,15 +153,30 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, arguments, _| {
-            tray::reveal(app, None);
+            let is_pilot = app
+                .try_state::<dashboard::DashboardHostState>()
+                .and_then(|s| s.core.lock().ok().map(|c| c.flags().dashboard_pilot))
+                .unwrap_or(false);
+            if is_pilot && !arguments.iter().any(|arg| arg == "--launcher") {
+                dashboard::toggle_from_tray(app);
+            } else {
+                tray::reveal(app, None);
+            }
             if let Some(link) = arguments.into_iter().find(|argument| argument.starts_with(LINK_PREFIX)) {
                 let _ = app.emit("deep-link", link);
             }
         }))
         .manage(update::UpdateState::default())
         .manage(dashboard_state)
+        .manage(web_services::WebServicesState::default())
         .setup(move |app| {
             tray::create(app.handle(), dashboard_pilot)?;
+            if dashboard_pilot {
+                dashboard::start_telemetry_loop(app.handle().clone());
+                if !std::env::args().any(|arg| arg == "--hidden") {
+                    dashboard::toggle_from_tray(app.handle());
+                }
+            }
             let state = app.state::<dashboard::DashboardHostState>();
             state.logger.timing("startup", "rust_setup_complete", state.elapsed_ms());
             Ok(())
@@ -183,7 +201,13 @@ fn main() {
             dashboard::dashboard_get_snapshot,
             dashboard::dashboard_set_visibility,
             dashboard::dashboard_set_active_tab,
-            dashboard::dashboard_update_settings
+            dashboard::dashboard_update_settings,
+            dashboard::dashboard_get_sysinfo,
+            dashboard::dashboard_get_telemetry,
+            dashboard::dashboard_get_media,
+            dashboard::dashboard_media_action,
+            dashboard::dashboard_refresh_weather,
+            dashboard::dashboard_get_lyrics
         ])
         .run(tauri::generate_context!())
         .expect("Stellaria could not start");

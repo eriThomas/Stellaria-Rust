@@ -27,9 +27,22 @@ if (-not (Test-Path $cargo)) { $cargo = 'cargo' }
 $manifest = Join-Path $launcher 'Cargo.toml'
 [string[]]$buildMode = @(); if (-not $Debug) { $buildMode = @('--release') }
 [string[]]$featureArgs = @(); if ($Experimental) { $featureArgs = @('--features', 'experimental') }
-$ErrorActionPreference = 'Continue'
-& $cargo clean --manifest-path $manifest @buildMode -p stellaria-launcher 2>&1 | Out-Null
-& $cargo build --manifest-path $manifest @buildMode @featureArgs 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -match 'error|warning: unused|Finished' }
-$exit = $LASTEXITCODE
-$ErrorActionPreference = 'Stop'
-if ($exit -ne 0) { throw 'Building the launcher failed.' }
+$previousTauriConfig = $env:TAURI_CONFIG
+if ($Experimental) {
+    $experimentalConfig = Join-Path $launcher 'tauri.experimental.conf.json'
+    $env:TAURI_CONFIG = Get-Content -Raw -Path $experimentalConfig
+}
+try {
+    $ErrorActionPreference = 'Continue'
+    & $cargo clean --manifest-path $manifest @buildMode -p stellaria-launcher 2>&1 | Out-Null
+    & $cargo build --manifest-path $manifest @buildMode @featureArgs 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -match 'error|warning: unused|Finished' }
+    $exit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($exit -ne 0) { throw 'Building the launcher failed.' }
+} finally {
+    if ($null -eq $previousTauriConfig) {
+        Remove-Item Env:TAURI_CONFIG -ErrorAction SilentlyContinue
+    } else {
+        $env:TAURI_CONFIG = $previousTauriConfig
+    }
+}

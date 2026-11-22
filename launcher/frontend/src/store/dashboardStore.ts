@@ -4,10 +4,17 @@ import type {
   DashboardSnapshot,
   DashboardTab,
   FeatureFlags,
+  LyricsResult,
+  MediaSnapshot,
   MonitorInfo,
+  SystemInfo,
+  TelemetrySnapshot,
   VisibilityEvent,
   VisibilityState,
+  WeatherSnapshot,
 } from '../types/ipc';
+
+const MAX_NETWORK_HISTORY = 40;
 
 const defaultVisibility: VisibilityState = {
   open: false,
@@ -45,9 +52,21 @@ export interface DashboardStoreState {
   settings: DashboardSettings;
   monitors: MonitorInfo[];
   flags: FeatureFlags;
+  sysinfo: SystemInfo | null;
+  telemetry: TelemetrySnapshot | null;
+  networkHistory: { down: number[]; up: number[] };
+  media: MediaSnapshot | null;
+  weather: WeatherSnapshot | null;
+  weatherError: string | null;
+  lyrics: LyricsResult | null;
   applySnapshot: (snapshot: DashboardSnapshot) => void;
   applyVisibilityEvent: (event: VisibilityEvent) => void;
   applySettingsUpdate: (revision: number, settings: DashboardSettings) => void;
+  applyTelemetry: (telemetry: TelemetrySnapshot) => void;
+  setSysInfo: (sysinfo: SystemInfo) => void;
+  setMedia: (media: MediaSnapshot) => void;
+  setWeather: (weather: WeatherSnapshot | null, error?: string | null) => void;
+  setLyrics: (lyrics: LyricsResult | null) => void;
   setLocalTab: (tab: DashboardTab) => void;
   reset: () => void;
 }
@@ -60,6 +79,13 @@ export const useDashboardStore = create<DashboardStoreState>(set => ({
   settings: defaultSettings,
   monitors: [],
   flags: defaultFlags,
+  sysinfo: null,
+  telemetry: null,
+  networkHistory: { down: [], up: [] },
+  media: null,
+  weather: null,
+  weatherError: null,
+  lyrics: null,
 
   applySnapshot: snapshot =>
     set({
@@ -74,7 +100,6 @@ export const useDashboardStore = create<DashboardStoreState>(set => ({
 
   applyVisibilityEvent: event =>
     set(state => {
-      // Ignore stale or out-of-order events.
       if (event.revision < state.revision) return state;
       return {
         revision: event.revision,
@@ -91,6 +116,21 @@ export const useDashboardStore = create<DashboardStoreState>(set => ({
       };
     }),
 
+  applyTelemetry: telemetry =>
+    set(state => {
+      const down = [...state.networkHistory.down, telemetry.network.rxBytesPerSec].slice(-MAX_NETWORK_HISTORY);
+      const up = [...state.networkHistory.up, telemetry.network.txBytesPerSec].slice(-MAX_NETWORK_HISTORY);
+      return {
+        telemetry,
+        networkHistory: { down, up },
+      };
+    }),
+
+  setSysInfo: sysinfo => set({ sysinfo }),
+  setMedia: media => set({ media }),
+  setWeather: (weather, error = null) => set({ weather, weatherError: error }),
+  setLyrics: lyrics => set({ lyrics }),
+
   setLocalTab: tab =>
     set(state => ({
       visibility: { ...state.visibility, activeTab: tab },
@@ -105,5 +145,12 @@ export const useDashboardStore = create<DashboardStoreState>(set => ({
       settings: defaultSettings,
       monitors: [],
       flags: defaultFlags,
+      sysinfo: null,
+      telemetry: null,
+      networkHistory: { down: [], up: [] },
+      media: null,
+      weather: null,
+      weatherError: null,
+      lyrics: null,
     }),
 }));

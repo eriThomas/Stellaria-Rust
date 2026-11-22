@@ -12,6 +12,8 @@ export type ThemeVariant =
   | 'neutral'
   | 'monochrome';
 
+export type MediaAction = 'togglePlayPause' | 'next' | 'previous';
+
 export interface PhysicalRect {
   left: number;
   top: number;
@@ -76,4 +78,96 @@ export interface VisibilityEvent {
 export interface SettingsEvent {
   revision: number;
   settings: DashboardSettings;
+}
+
+export interface DiskTelemetry {
+  mountPoint: string;
+  totalBytes: number;
+  availableBytes: number;
+}
+
+export interface NetworkTelemetry {
+  rxBytesPerSec: number;
+  txBytesPerSec: number;
+  totalRxBytes: number;
+  totalTxBytes: number;
+}
+
+export interface GpuTelemetry {
+  name: string;
+  usagePercent: number | null;
+  temperatureC: number | null;
+}
+
+export interface TelemetrySnapshot {
+  revision: number;
+  uptimeMs: number;
+  cpuPercent: number;
+  memoryUsedBytes: number;
+  memoryTotalBytes: number;
+  disks: DiskTelemetry[];
+  network: NetworkTelemetry;
+  gpu: GpuTelemetry | null;
+}
+
+export interface SystemInfo {
+  os: string;
+  cpu: string;
+  gpu: string | null;
+  user: string;
+  pictureBase64: string | null;
+}
+
+export interface MediaSessionInfo {
+  sessionId: string;
+  title: string;
+  artist: string;
+  album: string;
+  isPlaying: boolean;
+  positionSecs: number;
+  durationSecs: number;
+}
+
+export interface MediaSnapshot {
+  current: MediaSessionInfo | null;
+  sessions: MediaSessionInfo[];
+  artworkBase64: string | null;
+}
+
+export interface CurrentWeather {
+  temperature: number;
+  feelsLike: number;
+  humidity: number;
+  wind: number;
+  code: number;
+  isDay: boolean;
+  icon: string;
+  conditionKey: string;
+}
+
+export interface DailyForecast {
+  date: string;
+  code: number;
+  icon: string;
+  max: number;
+  min: number;
+}
+
+export interface WeatherSnapshot {
+  fetchedAtMs: number;
+  city: string;
+  current: CurrentWeather;
+  sunrise: string | null;
+  sunset: string | null;
+  daily: DailyForecast[];
+}
+
+export interface LyricLine {
+  timeSecs: number;
+  text: string;
+}
+
+export interface LyricsResult {
+  key: string;
+  lines: LyricLine[];
 }

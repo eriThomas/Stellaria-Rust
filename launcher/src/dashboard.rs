@@ -1,12 +1,15 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use stellaria_core::flags::{log_path, settings_path, FeatureFlags};
 use stellaria_core::logging::StructuredLogger;
+use stellaria_core::lyrics::LyricsResult;
 use stellaria_core::monitors::{compute_top_dashboard_placement, MonitorInfo, PhysicalRect};
 use stellaria_core::settings::{DashboardSettings, DashboardSettingsPatch};
 use stellaria_core::state::{DashboardCore, DashboardSnapshot, DashboardTab, OpenTrigger, VisibilityEvent};
+use stellaria_core::telemetry::{GpuTelemetry, MediaAction, MediaSnapshot, SystemInfo, TelemetrySnapshot};
+use stellaria_core::weather::WeatherSnapshot;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Runtime, State, WebviewUrl, WebviewWindowBuilder};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -14,12 +17,17 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 
+use crate::helper_bridge;
+use crate::telemetry::SystemMetricsSampler;
+use crate::web_services::{self, WebServicesState};
+
 pub const DASHBOARD_LABEL: &str = "dashboard";
 const DEFAULT_LOGICAL_WIDTH: f64 = 960.0;
 const DEFAULT_LOGICAL_HEIGHT: f64 = 560.0;
 
 pub struct DashboardHostState {
     pub core: Mutex<DashboardCore>,
+    pub sampler: Mutex<SystemMetricsSampler>,
     pub logger: StructuredLogger,
     settings_file: PathBuf,
     started_at: Instant,
@@ -39,6 +47,7 @@ impl DashboardHostState {
         let core = DashboardCore::new(session_generation, settings, flags);
         Self {
             core: Mutex::new(core),
+            sampler: Mutex::new(SystemMetricsSampler::default()),
             logger,
             settings_file,
             started_at: Instant::now(),
@@ -243,4 +252,102 @@ pub fn dashboard_update_settings(
     let _ = app.emit("dashboard://settings", serde_json::json!({ "revision": revision, "settings": &updated }));
     state.logger.info("settings", "updated");
     Ok(updated)
+}
+
+#[tauri::command]
+pub async fn dashboard_get_sysinfo() -> Result<SystemInfo, String> {
+    helper_bridge::fetch_system_info().await
+}
+
+#[tauri::command]
+pub async fn dashboard_get_telemetry(state: State<'_, DashboardHostState>) -> Result<TelemetrySnapshot, String> {
+    let want_gpu = state
+        .core
+        .lock()
+        .map(|core| core.should_poll_gpu())
+        .unwrap_or(false);
+    let gpu: Option<GpuTelemetry> = if want_gpu {
+        helper_bridge::fetch_gpu_telemetry().await.ok()
+    } else {
+        None
+    };
+    let mut sampler = state.sampler.lock().map_err(|_| "busy".to_string())?;
+    Ok(sampler.sample(gpu))
+}
+
+#[tauri::command]
+pub async fn dashboard_get_media() -> Result<MediaSnapshot, String> {
+    helper_bridge::fetch_media_snapshot().await
+}
+
+#[tauri::command]
+pub async fn dashboard_media_action(action: MediaAction) -> Result<(), String> {
+    helper_bridge::send_media_action(action).await
+}
+
+#[tauri::command]
+pub async fn dashboard_refresh_weather(
+    state: State<'_, DashboardHostState>,
+    web: State<'_, WebServicesState>,
+    force: bool,
+) -> Result<Option<WeatherSnapshot>, String> {
+    let enabled = state
+        .core
+        .lock()
+        .map(|core| core.settings().weather_enabled)
+        .unwrap_or(true);
+    web_services::fetch_weather(&web, enabled, force).await
+}
+
+#[tauri::command]
+pub async fn dashboard_get_lyrics(
+    state: State<'_, DashboardHostState>,
+    web: State<'_, WebServicesState>,
+    artist: String,
+    title: String,
+    duration_secs: Option<f64>,
+) -> Result<LyricsResult, String> {
+    let enabled = state
+        .core
+        .lock()
+        .map(|core| core.settings().lyrics_enabled)
+        .unwrap_or(true);
+    if !enabled {
+        return Ok(LyricsResult {
+            key: String::new(),
+            lines: Vec::new(),
+        });
+    }
+    web_services::search_lyrics(&web, artist, title, duration_secs).await
+}
+
+/// Visibility-gated background telemetry loop. Performs ZERO native sampling while the dashboard is hidden.
+pub fn start_telemetry_loop(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut tick: u64 = 0;
+        let mut last_gpu: Option<GpuTelemetry> = None;
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            let state = app.state::<DashboardHostState>();
+            let (poll_telemetry, poll_gpu) = match state.core.lock() {
+                Ok(core) => (core.should_poll_telemetry(), core.should_poll_gpu()),
+                Err(_) => (false, false),
+            };
+            if !poll_telemetry {
+                last_gpu = None;
+                continue;
+            }
+            tick = tick.wrapping_add(1);
+            if poll_gpu && tick % 2 == 1 {
+                if let Ok(gpu) = tauri::async_runtime::block_on(helper_bridge::fetch_gpu_telemetry()) {
+                    last_gpu = Some(gpu);
+                }
+            }
+            let snapshot = match state.sampler.lock() {
+                Ok(mut sampler) => sampler.sample(if poll_gpu { last_gpu.clone() } else { None }),
+                Err(_) => continue,
+            };
+            let _ = app.emit("dashboard://telemetry", &snapshot);
+        }
+    });
 }
