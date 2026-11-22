@@ -3,7 +3,10 @@
 mod dashboard;
 mod foreground;
 mod helper_bridge;
+mod helper_stream;
 mod installation;
+mod monitor_host;
+mod session_watcher;
 mod telemetry;
 mod tray;
 mod update;
@@ -168,10 +171,14 @@ fn main() {
         }))
         .manage(update::UpdateState::default())
         .manage(dashboard_state)
+        .manage(monitor_host::ShellHostState::initialize())
         .manage(web_services::WebServicesState::default())
         .setup(move |app| {
             tray::create(app.handle(), dashboard_pilot)?;
             if dashboard_pilot {
+                monitor_host::reconcile_topology(app.handle(), None);
+                helper_stream::start_helper_stream(app.handle().clone());
+                session_watcher::start_session_watcher(app.handle().clone());
                 dashboard::start_telemetry_loop(app.handle().clone());
                 dashboard::start_hover_edge_watcher(app.handle().clone());
                 if !std::env::args().any(|arg| arg == "--hidden") {
@@ -208,7 +215,9 @@ fn main() {
             dashboard::dashboard_get_media,
             dashboard::dashboard_media_action,
             dashboard::dashboard_refresh_weather,
-            dashboard::dashboard_get_lyrics
+            dashboard::dashboard_get_lyrics,
+            monitor_host::shell_get_snapshot,
+            monitor_host::shell_set_synthetic_bars_enabled
         ])
         .run(tauri::generate_context!())
         .expect("Stellaria could not start");

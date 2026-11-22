@@ -42,7 +42,8 @@ fn menu<R: Runtime>(app: &AppHandle<R>, labels: &TrayLabels, dashboard_pilot: bo
     }
     menu.append(&MenuItem::with_id(app, "open", clean(&labels.open), true, None::<&str>)?)?;
     if dashboard_pilot {
-        menu.append(&MenuItem::with_id(app, "dashboard-pilot", "Dashboard (Pilot)", true, None::<&str>)?)?;
+        menu.append(&MenuItem::with_id(app, "dashboard-pilot", "★ Dashboard (Pilot)", true, None::<&str>)?)?;
+        menu.append(&MenuItem::with_id(app, "synthetic-bars", "★ Toggle Synthetic Bars (M2)", true, None::<&str>)?)?;
     }
     menu.append(&MenuItem::with_id(app, "start", clean(&labels.start), true, None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "stop", clean(&labels.stop), true, None::<&str>)?)?;
@@ -57,7 +58,7 @@ pub fn create<R: Runtime>(app: &AppHandle<R>, dashboard_pilot: bool) -> tauri::R
         start: "Démarrer le thème".into(),
         stop: "Arrêter le thème".into(),
         quit: "Quitter".into(),
-        tooltip: if dashboard_pilot { "Stellaria Experimental".into() } else { "Stellaria".into() },
+        tooltip: if dashboard_pilot { "Stellaria Experimental (M2)".into() } else { "Stellaria".into() },
         update: None,
     };
     let mut builder = TrayIconBuilder::with_id(TRAY)
@@ -67,6 +68,7 @@ pub fn create<R: Runtime>(app: &AppHandle<R>, dashboard_pilot: bool) -> tauri::R
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => reveal(app, None),
             "dashboard-pilot" => crate::dashboard::toggle_from_tray(app),
+            "synthetic-bars" => crate::monitor_host::toggle_synthetic_bars(app),
             "update" => reveal(app, Some("install")),
             "start" => {
                 std::thread::spawn(|| crate::run_helper("start"));
@@ -96,6 +98,11 @@ pub fn tray_labels(app: AppHandle, labels: TrayLabels) -> Result<(), String> {
         .try_state::<crate::dashboard::DashboardHostState>()
         .and_then(|s| s.core.lock().ok().map(|c| c.flags().dashboard_pilot))
         .unwrap_or(false);
+    let tooltip = if dashboard_pilot {
+        "Stellaria Experimental (M2)".to_string()
+    } else {
+        clean(&labels.tooltip)
+    };
     tray.set_menu(Some(menu(&app, &labels, dashboard_pilot).map_err(|error| error.to_string())?)).map_err(|error| error.to_string())?;
-    tray.set_tooltip(Some(clean(&labels.tooltip))).map_err(|error| error.to_string())
+    tray.set_tooltip(Some(tooltip)).map_err(|error| error.to_string())
 }

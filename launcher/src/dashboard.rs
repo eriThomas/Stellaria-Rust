@@ -274,6 +274,10 @@ pub fn start_hover_edge_watcher(app: AppHandle) {
 
             std::thread::sleep(Duration::from_millis(if is_open { 50 } else { 80 }));
 
+            if crate::session_watcher::is_session_locked() {
+                continue;
+            }
+
             let Some((cx, cy)) = cursor_pos() else {
                 continue;
             };
