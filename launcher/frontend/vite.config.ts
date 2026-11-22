@@ -12,6 +12,7 @@ export default defineConfig({
       input: {
         dashboard: resolve(__dirname, 'dashboard.html'),
         bar: resolve(__dirname, 'bar.html'),
+        launcher: resolve(__dirname, 'launcher.html'),
       },
       output: {
         entryFileNames: 'dashboard/[name].js',

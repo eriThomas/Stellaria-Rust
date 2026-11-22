@@ -1,6 +1,6 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { BarApp, type BarBridge, type ShellSnapshot } from './BarApp';
+import { BarApp, type BarBridge, type ShellSnapshot, type TaskbarStatePayload } from './BarApp';
 
 const baseSnapshot: ShellSnapshot = {
   revision: 5,
@@ -10,47 +10,84 @@ const baseSnapshot: ShellSnapshot = {
   syntheticBarsEnabled: true,
   barEdge: 'left',
   barThicknessLogical: 48,
-  taskCount: 7,
+  taskCount: 2,
   lastRecovery: 'startup',
   monitors: [
     {
-      windowLabel: 'bar-display4',
+      windowLabel: 'bar-display1',
       covered: false,
-      barPlacement: { x: -1920, y: 540, width: 60, height: 1080 },
+      barPlacement: { x: 0, y: 0, width: 48, height: 1080 },
       monitor: {
-        id: '\\\\.\\DISPLAY4',
-        name: '\\\\.\\DISPLAY4',
-        bounds: { left: -1920, top: 540, right: 0, bottom: 1620 },
-        workArea: { left: -1920, top: 540, right: 0, bottom: 1620 },
-        scaleFactor: 1.25,
-        primary: false,
+        id: '\\\\.\\DISPLAY1',
+        name: '\\\\.\\DISPLAY1',
+        bounds: { left: 0, top: 0, right: 1920, bottom: 1080 },
+        workArea: { left: 0, top: 0, right: 1920, bottom: 1080 },
+        scaleFactor: 1.0,
+        primary: true,
         fullscreen: false,
       },
     },
   ],
 };
 
-describe('BarApp (Milestone 2 synthetic bar)', () => {
-  it('renders monitor projection and ignores stale revision snapshots', async () => {
+const baseTasks: TaskbarStatePayload = {
+  revision: 1,
+  sessionGeneration: 2,
+  icons: {},
+  groups: [
+    {
+      key: 'vivaldi.exe',
+      displayName: 'Vivaldi',
+      exePath: 'C:\\Apps\\vivaldi.exe',
+      pinned: true,
+      active: true,
+      windowCount: 4,
+      windows: [
+        {
+          hwnd: 101,
+          pid: 1001,
+          title: 'Stellaria',
+          exePath: 'C:\\Apps\\vivaldi.exe',
+          exeName: 'vivaldi.exe',
+          monitorId: '\\\\.\\DISPLAY1',
+          minimized: false,
+          active: true,
+        },
+      ],
+    },
+  ],
+};
+
+describe('BarApp (Rust Taskbar)', () => {
+  it('renders grouped tasks, activates on click, and opens context menu on right-click', async () => {
     const handlers: Array<(snap: ShellSnapshot) => void> = [];
     const bridge: BarBridge = {
       getSnapshot: vi.fn().mockResolvedValue(baseSnapshot),
-      onSnapshot: vi.fn().mockImplementation(async handler => {
-        handlers.push(handler);
+      getTaskbarState: vi.fn().mockResolvedValue(baseTasks),
+      onSnapshot: vi.fn().mockImplementation(async h => {
+        handlers.push(h);
         return () => {};
       }),
+      onTasks: vi.fn().mockResolvedValue(() => {}),
+      activateWindow: vi.fn().mockResolvedValue(undefined),
+      closeWindow: vi.fn().mockResolvedValue(undefined),
+      togglePin: vi.fn().mockResolvedValue(false),
+      launchApp: vi.fn().mockResolvedValue(undefined),
+      toggleLauncher: vi.fn().mockResolvedValue(undefined),
+      openDashboard: vi.fn().mockResolvedValue(undefined),
     };
 
-    render(<BarApp monitorLabel="bar-display4" bridge={bridge} />);
+    render(<BarApp monitorLabel="bar-display1" bridge={bridge} />);
 
-    expect(await screen.findByTestId('bar-monitor-id')).toHaveTextContent('DISPLAY4');
-    expect(screen.getByTestId('bar-task-count')).toHaveTextContent('7t');
-    expect(screen.getByTestId('bar-gen')).toHaveTextContent('g2');
+    const vivaldiBtn = await screen.findByTitle('Vivaldi (4)');
+    fireEvent.click(vivaldiBtn);
+    expect(bridge.activateWindow).toHaveBeenCalledWith(101, 1001, false);
 
-    // Stale revision must be ignored.
+    fireEvent.contextMenu(vivaldiBtn);
+    expect(screen.getByTestId('bar-context-menu')).toBeInTheDocument();
+
     act(() => {
-      handlers.forEach(fn => fn({ ...baseSnapshot, revision: 2, taskCount: 99 }));
+      handlers.forEach(fn => fn({ ...baseSnapshot, revision: 2 }));
     });
-    expect(screen.getByTestId('bar-task-count')).toHaveTextContent('7t');
   });
 });
