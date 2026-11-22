@@ -80,6 +80,7 @@ export interface BarBridge {
   toggleSession?: (monitorId: string | null) => Promise<void>;
   openSettings?: (page: 'sound' | 'network-status' | 'regionlanguage' | 'notifications') => Promise<void>;
   volumeAction?: (action: 'mute' | 'up' | 'down') => Promise<void>;
+  getMasterAudio?: () => Promise<{ volume: number; muted: boolean }>;
   getKeyboardLayout?: () => Promise<string>;
   getNotificationCount?: () => Promise<number>;
 }
@@ -107,6 +108,7 @@ const defaultBridge: BarBridge = {
   toggleSession: monitorId => invoke<void>('session_toggle', { monitorId }),
   openSettings: page => invoke<void>('shell_open_settings', { page }),
   volumeAction: action => invoke<void>('shell_volume_action', { action }),
+  getMasterAudio: () => invoke<{ volume: number; muted: boolean }>('shell_get_master_audio'),
   getKeyboardLayout: () => invoke<string>('shell_get_keyboard_layout'),
   getNotificationCount: async () => {
     const items = await invoke<Array<{ id: string }>>('popout_get_notifications');
@@ -130,6 +132,7 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
   const [taskbar, setTaskbar] = useState<TaskbarStatePayload | null>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
   const [kbLayout, setKbLayout] = useState('US');
+  const [audio, setAudio] = useState<{ volume: number; muted: boolean }>({ volume: 50, muted: false });
   const [notifCount, setNotifCount] = useState(0);
   const [now, setNow] = useState(() => new Date());
   const hoverTimerRef = useRef<number | null>(null);
@@ -179,6 +182,9 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
     const pollKb = () => {
       bridge.getKeyboardLayout?.().then(code => {
         if (active && code) setKbLayout(code);
+      }).catch(() => {});
+      bridge.getMasterAudio?.().then(a => {
+        if (active && a) setAudio(a);
       }).catch(() => {});
     };
     const pollNotifs = () => {
@@ -359,8 +365,8 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
           </button>
           <button
             type="button"
-            className="status-item state-layer"
-            title="Volume (click: mixer, scroll: adjust, right-click: mute)"
+            className={`status-item state-layer${audio.muted ? ' muted' : ''}`}
+            title={`Volume: ${audio.muted ? 'Muted' : `${audio.volume}%`} (click: mixer, scroll: adjust, right-click: mute)`}
             onClick={e => {
               const rect = e.currentTarget.getBoundingClientRect();
               void bridge.showPopout?.(view?.monitor.id ?? null, 'audio', rect.top + rect.height / 2);
@@ -381,14 +387,27 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
             }}
             onContextMenu={e => {
               e.preventDefault();
+              setAudio(prev => ({ ...prev, muted: !prev.muted }));
               void bridge.volumeAction?.('mute');
             }}
             onWheel={e => {
               e.preventDefault();
+              const delta = e.deltaY < 0 ? 2 : -2;
+              setAudio(prev => ({ volume: Math.min(100, Math.max(0, prev.volume + delta)), muted: false }));
               void bridge.volumeAction?.(e.deltaY < 0 ? 'up' : 'down');
             }}
           >
-            <Icon name="volume_up" />
+            <Icon
+              name={
+                audio.muted || audio.volume === 0
+                  ? 'volume_off'
+                  : audio.volume < 34
+                    ? 'volume_mute'
+                    : audio.volume < 67
+                      ? 'volume_down'
+                      : 'volume_up'
+              }
+            />
           </button>
           <button
             type="button"

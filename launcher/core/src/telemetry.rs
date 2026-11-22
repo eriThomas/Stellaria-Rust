@@ -106,6 +106,26 @@ pub fn compute_cpu_percent(
     ((busy as f64 / total as f64) * 100.0).clamp(0.0, 100.0)
 }
 
+/// Parses a single CSV line from `nvidia-smi --query-gpu=name,utilization.gpu,temperature.gpu --format=csv,noheader,nounits`.
+pub fn parse_nvidia_smi_csv(output: &str) -> Option<GpuTelemetry> {
+    let line = output.lines().find(|l| !l.trim().is_empty())?;
+    let mut parts = line.split(',').map(str::trim);
+    let name = parts.next()?.to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let usage_percent = parts
+        .next()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|v| v.clamp(0.0, 100.0));
+    let temperature_c = parts.next().and_then(|s| s.parse::<f64>().ok());
+    Some(GpuTelemetry {
+        name,
+        usage_percent,
+        temperature_c,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +143,19 @@ mod tests {
         assert_eq!(MediaAction::TogglePlayPause.as_helper_action(), "playPause");
         assert_eq!(MediaAction::Next.as_helper_action(), "next");
         assert_eq!(MediaAction::Previous.as_helper_action(), "previous");
+    }
+
+    #[test]
+    fn parses_nvidia_smi_csv_and_handles_na_fields() {
+        let parsed = parse_nvidia_smi_csv("NVIDIA GeForce RTX 3060, 24, 49\r\n").unwrap();
+        assert_eq!(parsed.name, "NVIDIA GeForce RTX 3060");
+        assert_eq!(parsed.usage_percent, Some(24.0));
+        assert_eq!(parsed.temperature_c, Some(49.0));
+
+        let na = parse_nvidia_smi_csv("NVIDIA GeForce GTX 1650, [N/A], 42").unwrap();
+        assert_eq!(na.usage_percent, None);
+        assert_eq!(na.temperature_c, Some(42.0));
+
+        assert!(parse_nvidia_smi_csv("   \n").is_none());
     }
 }

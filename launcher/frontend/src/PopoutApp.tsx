@@ -111,6 +111,10 @@ function MaterialSlider({
 export function PopoutApp() {
   const [kind, setKind] = useState<PopoutKind>('audio');
   const [open, setOpen] = useState(true);
+  const [masterAudio, setMasterAudio] = useState<{ volume: number; muted: boolean }>({
+    volume: 50,
+    muted: false,
+  });
   const [sessions, setSessions] = useState<AudioSessionItem[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [layouts, setLayouts] = useState<KeyboardLayoutsPayload>({ current: '', items: [] });
@@ -130,6 +134,9 @@ export function PopoutApp() {
   }, []);
 
   const loadAudio = useCallback(() => {
+    invoke<{ volume: number; muted: boolean }>('shell_get_master_audio')
+      .then(a => setMasterAudio(a))
+      .catch(() => {});
     setSessionsLoading(true);
     invoke<AudioSessionItem[]>('popout_get_audio_sessions')
       .then(list => setSessions(list))
@@ -232,33 +239,41 @@ export function PopoutApp() {
                 {kind === 'audio' && (
                   <div className="view" style={{ width: '340px' }}>
                     <div className="view-header">
-                      <Icon name="volume_up" />
+                      <Icon
+                        name={
+                          masterAudio.muted || masterAudio.volume === 0
+                            ? 'volume_off'
+                            : masterAudio.volume < 34
+                              ? 'volume_mute'
+                              : masterAudio.volume < 67
+                                ? 'volume_down'
+                                : 'volume_up'
+                        }
+                      />
                       <span className="view-title">Volume</span>
+                      <span className="view-value">
+                        {masterAudio.muted ? 'Muted' : `${masterAudio.volume}%`}
+                      </span>
                     </div>
+                    <MaterialSlider
+                      value={masterAudio.volume}
+                      muted={masterAudio.muted}
+                      onChange={next => {
+                        setMasterAudio({ volume: next, muted: false });
+                        void invoke('shell_set_master_volume', { volume: next });
+                      }}
+                    />
                     <div className="button-line">
                       <button
                         type="button"
-                        className="tonal-button"
-                        onClick={() => void invoke('shell_volume_action', { action: 'mute' })}
+                        className={`tonal-button${masterAudio.muted ? ' active' : ''}`}
+                        onClick={() => {
+                          setMasterAudio(prev => ({ ...prev, muted: !prev.muted }));
+                          void invoke('shell_volume_action', { action: 'mute' });
+                        }}
                       >
-                        <Icon name="volume_off" />
-                        <span>Mute</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="tonal-button"
-                        onClick={() => void invoke('shell_volume_action', { action: 'down' })}
-                      >
-                        <Icon name="volume_down" />
-                        <span>-</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="tonal-button"
-                        onClick={() => void invoke('shell_volume_action', { action: 'up' })}
-                      >
-                        <Icon name="volume_up" />
-                        <span>+</span>
+                        <Icon name={masterAudio.muted ? 'volume_up' : 'volume_off'} />
+                        <span>{masterAudio.muted ? 'Unmute' : 'Mute'}</span>
                       </button>
                     </div>
                     <span className="section-label">Applications</span>

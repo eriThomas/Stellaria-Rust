@@ -4,9 +4,11 @@ mod app_catalog;
 mod helper_bridge;
 mod telemetry;
 mod web_services;
+mod win32_audio;
 mod win32_capture;
 mod win32_net;
 mod win32_shell;
+mod win32_sysinfo;
 mod win32_tasks;
 
 use std::collections::HashMap;
@@ -577,7 +579,9 @@ fn start_background_loops(app: AppHandle) {
             }
             tick = tick.wrapping_add(1);
             if poll_gpu && tick % 2 == 1 {
-                if let Ok(gpu) = tauri::async_runtime::block_on(helper_bridge::fetch_gpu_telemetry()) {
+                if let Some(gpu) = win32_sysinfo::query_gpu_telemetry() {
+                    last_gpu = Some(gpu);
+                } else if let Ok(gpu) = tauri::async_runtime::block_on(helper_bridge::fetch_gpu_telemetry()) {
                     last_gpu = Some(gpu);
                 }
             }
@@ -744,15 +748,18 @@ fn dashboard_update_settings(
 
 #[tauri::command]
 async fn dashboard_get_sysinfo() -> Result<SystemInfo, String> {
-    helper_bridge::fetch_system_info().await.or_else(|_| {
-        Ok(SystemInfo {
-            os: "Windows 11".into(),
-            cpu: std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_else(|_| "CPU".into()),
-            gpu: None,
-            user: std::env::var("USERNAME").unwrap_or_else(|_| "User".into()),
-            picture_base64: None,
-        })
-    })
+    let mut native = tauri::async_runtime::spawn_blocking(win32_sysinfo::query_system_info)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Ok(helper_info) = helper_bridge::fetch_system_info().await {
+        if native.picture_base64.is_none() {
+            native.picture_base64 = helper_info.picture_base64;
+        }
+        if native.gpu.is_none() {
+            native.gpu = helper_info.gpu;
+        }
+    }
+    Ok(native)
 }
 
 #[tauri::command]
@@ -763,7 +770,14 @@ async fn dashboard_get_telemetry(state: State<'_, ShellAppState>) -> Result<Tele
         .map(|c| c.should_poll_gpu())
         .unwrap_or(false);
     let gpu = if want_gpu {
-        helper_bridge::fetch_gpu_telemetry().await.ok()
+        let native_gpu = tauri::async_runtime::spawn_blocking(win32_sysinfo::query_gpu_telemetry)
+            .await
+            .ok()
+            .flatten();
+        match native_gpu {
+            Some(g) => Some(g),
+            None => helper_bridge::fetch_gpu_telemetry().await.ok(),
+        }
     } else {
         None
     };
@@ -1226,40 +1240,41 @@ fn shell_open_settings(page: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn shell_get_master_audio() -> Result<win32_audio::MasterAudioState, String> {
+    tauri::async_runtime::spawn_blocking(win32_audio::get_master_audio)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn shell_set_master_volume(app: AppHandle, volume: u32) -> Result<win32_audio::MasterAudioState, String> {
+    let state = tauri::async_runtime::spawn_blocking(move || win32_audio::set_master_volume(volume))
+        .await
+        .map_err(|e| e.to_string())??;
+    ESTIMATED_VOLUME.store(state.volume, std::sync::atomic::Ordering::Relaxed);
+    ESTIMATED_MUTED.store(state.muted, std::sync::atomic::Ordering::Relaxed);
+    let _ = show_osd_window(&app, "volume", state.volume, state.muted);
+    Ok(state)
+}
+
+#[tauri::command]
 async fn shell_volume_action(app: AppHandle, action: String) -> Result<(), String> {
-    #[link(name = "user32")]
-    extern "system" {
-        fn keybd_event(b_vk: u8, b_scan: u8, dw_flags: u32, dw_extra_info: usize);
+    let native_res = tauri::async_runtime::spawn_blocking(move || match action.as_str() {
+        "mute" => win32_audio::toggle_master_mute(),
+        "down" => win32_audio::step_master_volume(-2),
+        "up" => win32_audio::step_master_volume(2),
+        _ => Err("unknown-volume-action".to_string()),
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Ok(state) = native_res {
+        ESTIMATED_VOLUME.store(state.volume, std::sync::atomic::Ordering::Relaxed);
+        ESTIMATED_MUTED.store(state.muted, std::sync::atomic::Ordering::Relaxed);
+        let _ = show_osd_window(&app, "volume", state.volume, state.muted);
+        return Ok(());
     }
-    const KEYEVENTF_KEYUP: u32 = 0x0002;
-    let vk: u8 = match action.as_str() {
-        "mute" => {
-            let next_muted = !ESTIMATED_MUTED.load(std::sync::atomic::Ordering::Relaxed);
-            ESTIMATED_MUTED.store(next_muted, std::sync::atomic::Ordering::Relaxed);
-            0xAD // VK_VOLUME_MUTE
-        }
-        "down" => {
-            let cur = ESTIMATED_VOLUME.load(std::sync::atomic::Ordering::Relaxed);
-            ESTIMATED_VOLUME.store(cur.saturating_sub(2), std::sync::atomic::Ordering::Relaxed);
-            ESTIMATED_MUTED.store(false, std::sync::atomic::Ordering::Relaxed);
-            0xAE // VK_VOLUME_DOWN
-        }
-        "up" => {
-            let cur = ESTIMATED_VOLUME.load(std::sync::atomic::Ordering::Relaxed);
-            ESTIMATED_VOLUME.store((cur + 2).min(100), std::sync::atomic::Ordering::Relaxed);
-            ESTIMATED_MUTED.store(false, std::sync::atomic::Ordering::Relaxed);
-            0xAF // VK_VOLUME_UP
-        }
-        _ => return Err("unknown-volume-action".to_string()),
-    };
-    unsafe {
-        keybd_event(vk, 0, 0, 0);
-        keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
-    }
-    let vol = ESTIMATED_VOLUME.load(std::sync::atomic::Ordering::Relaxed);
-    let muted = ESTIMATED_MUTED.load(std::sync::atomic::Ordering::Relaxed);
-    let _ = show_osd_window(&app, "volume", vol, muted);
-    Ok(())
+    Err("volume-action-failed".to_string())
 }
 
 fn show_osd_window<R: Runtime>(app: &AppHandle<R>, kind: &str, value: u32, muted: bool) -> Result<(), String> {
@@ -1970,6 +1985,8 @@ fn main() {
             session_hide,
             island_show_toast,
             shell_open_settings,
+            shell_get_master_audio,
+            shell_set_master_volume,
             shell_volume_action,
             shell_get_keyboard_layout,
             shell_set_keep_awake,
