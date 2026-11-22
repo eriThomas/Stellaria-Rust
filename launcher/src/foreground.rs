@@ -3,8 +3,8 @@ use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONI
 use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows_sys::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, SetForegroundWindow, ShowWindow,
-    SW_RESTORE, SW_SHOWNOACTIVATE,
+    BringWindowToTop, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic,
+    SetForegroundWindow, ShowWindow, GWL_STYLE, SW_RESTORE, SW_SHOWNOACTIVATE, WS_CAPTION,
 };
 
 const DESKTOP_CLASSES: [&str; 3] = ["Progman", "WorkerW", "Shell_TrayWnd"];
@@ -42,6 +42,21 @@ pub fn game_running(own: HWND) -> bool {
         return false;
     }
     covers_its_monitor(foreground)
+}
+
+/// Returns true only for exclusive D3D fullscreen or true borderless fullscreen (not normal maximized apps).
+pub fn is_true_fullscreen(own: HWND) -> bool {
+    let mut state = 0;
+    if unsafe { SHQueryUserNotificationState(&mut state) } == 0 && state == QUNS_RUNNING_D3D_FULL_SCREEN {
+        return true;
+    }
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.is_null() || foreground == own || DESKTOP_CLASSES.contains(&class_name(foreground).as_str()) {
+        return false;
+    }
+    let style = unsafe { GetWindowLongPtrW(foreground, GWL_STYLE) } as u32;
+    let has_caption = (style & WS_CAPTION) == WS_CAPTION;
+    !has_caption && covers_its_monitor(foreground)
 }
 
 pub fn bring_to_front(hwnd: HWND) {

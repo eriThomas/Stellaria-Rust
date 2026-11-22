@@ -1,5 +1,6 @@
 import { localeForLanguage, translate, type SupportedLanguage } from '../i18n/messages';
 import type { WeatherSnapshot } from '../types/ipc';
+import { Icon } from './ExpressiveShape';
 
 interface WeatherTabProps {
   lang: SupportedLanguage;
@@ -17,97 +18,105 @@ export function WeatherTab({
   onRefresh,
 }: WeatherTabProps) {
   const locale = localeForLanguage(lang);
-
-  if (!weatherEnabled) {
-    return (
-      <section className="card" data-testid="tab-panel-weather">
-        <strong>{translate(lang, 'weather_disabled')}</strong>
-      </section>
-    );
-  }
-
-  if (weatherError) {
-    return (
-      <section className="card" data-testid="tab-panel-weather">
-        <strong>{translate(lang, 'weather_unavailable')}</strong>
-        <button type="button" className="icon-btn" onClick={onRefresh}>
-          ↻
-        </button>
-      </section>
-    );
-  }
-
-  if (!weather) {
-    return (
-      <section className="card" data-testid="tab-panel-weather">
-        <span>{translate(lang, 'loading')}</span>
-      </section>
-    );
-  }
+  const dateText = new Date().toLocaleDateString(locale, {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+  });
+  const formattedDate = dateText.charAt(0).toUpperCase() + dateText.slice(1);
 
   return (
-    <section data-testid="tab-panel-weather">
+    <section className="page weather" data-page="weather" data-testid="tab-panel-weather">
       <header className="weather-header">
         <div>
-          <strong style={{ fontSize: 18 }}>{weather.city}</strong>
-          <div>
-            <small>
-              {new Date().toLocaleDateString(locale, {
-                weekday: 'long',
-                day: 'numeric',
-                month: 'long',
-              })}
-            </small>
-          </div>
+          <span className="weather-city">
+            {!weatherEnabled
+              ? translate(lang, 'weather_disabled')
+              : weatherError
+                ? translate(lang, 'weather_unavailable')
+                : weather?.city ?? translate(lang, 'loading')}
+          </span>
+          <span className="weather-date">{formattedDate}</span>
         </div>
-        <div className="controls-row">
-          <small>
-            {translate(lang, 'sunrise')}: {weather.sunrise?.slice(11, 16) ?? '--:--'}
-          </small>
-          <small>
-            {translate(lang, 'sunset')}: {weather.sunset?.slice(11, 16) ?? '--:--'}
-          </small>
-          <button type="button" className="icon-btn" onClick={onRefresh}>
-            ↻
-          </button>
+        <div className="weather-stats">
+          <div className="weather-stat" onClick={onRefresh} style={{ cursor: 'pointer' }}>
+            <Icon name="wb_twilight" />
+            <div>
+              <span className="stat-label">{translate(lang, 'sunrise')}</span>
+              <span className="stat-value">{weather?.sunrise?.slice(11, 16) ?? '--:--'}</span>
+            </div>
+          </div>
+          <div className="weather-stat">
+            <Icon name="bedtime" />
+            <div>
+              <span className="stat-label">{translate(lang, 'sunset')}</span>
+              <span className="stat-value">{weather?.sunset?.slice(11, 16) ?? '--:--'}</span>
+            </div>
+          </div>
         </div>
       </header>
 
-      <article className="card" style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
-        <span style={{ fontSize: 36, fontWeight: 700 }}>{Math.round(weather.current.temperature)}°C</span>
-        <span>{translate(lang, weather.current.conditionKey)}</span>
-      </article>
-
-      <div className="weather-details-grid">
-        <article className="card">
-          <small>{translate(lang, 'humidity')}</small>
-          <strong>{Math.round(weather.current.humidity)}%</strong>
-        </article>
-        <article className="card">
-          <small>{translate(lang, 'feels_like')}</small>
-          <strong>{Math.round(weather.current.feelsLike)}°C</strong>
-        </article>
-        <article className="card">
-          <small>{translate(lang, 'wind')}</small>
-          <strong>{Math.round(weather.current.wind)} km/h</strong>
-        </article>
+      <div className="card weather-hero" style={{ '--stagger': 0 } as React.CSSProperties}>
+        <Icon name={weather?.current.icon ?? 'cloud'} className="weather-hero-icon" />
+        <div className="weather-hero-text">
+          <span className="weather-hero-temp">
+            {weather ? `${Math.round(weather.current.temperature)}°C` : '--°C'}
+          </span>
+          <span className="weather-hero-label">
+            {weather ? translate(lang, weather.current.conditionKey) : '—'}
+          </span>
+        </div>
       </div>
 
-      <small>{translate(lang, 'forecast_7d')}</small>
-      <div className="forecast-row" style={{ marginTop: 6 }}>
-        {weather.daily.map((day, index) => {
+      <div className="weather-details">
+        <div className="card detail" style={{ '--stagger': 1 } as React.CSSProperties}>
+          <Icon name="water_drop" className="secondary" />
+          <div>
+            <span className="detail-label">{translate(lang, 'humidity')}</span>
+            <span className="detail-value">
+              {weather ? `${Math.round(weather.current.humidity)}%` : '--'}
+            </span>
+          </div>
+        </div>
+        <div className="card detail" style={{ '--stagger': 2 } as React.CSSProperties}>
+          <Icon name="thermostat" className="primary" />
+          <div>
+            <span className="detail-label">{translate(lang, 'feels_like')}</span>
+            <span className="detail-value">
+              {weather ? `${Math.round(weather.current.feelsLike)}°C` : '--'}
+            </span>
+          </div>
+        </div>
+        <div className="card detail" style={{ '--stagger': 3 } as React.CSSProperties}>
+          <Icon name="air" className="tertiary" />
+          <div>
+            <span className="detail-label">{translate(lang, 'wind')}</span>
+            <span className="detail-value">
+              {weather ? `${Math.round(weather.current.wind)} km/h` : '--'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <span className="forecast-title">{translate(lang, 'forecast_7d')}</span>
+      <div className="forecast">
+        {(weather?.daily ?? []).map((day, index) => {
           const date = new Date(`${day.date}T12:00:00`);
           return (
-            <article key={day.date} className="card" style={{ alignItems: 'center', padding: 8 }}>
-              <small>
+            <div key={day.date} className="card forecast-day" style={{ '--stagger': 4 + index } as React.CSSProperties}>
+              <span className="forecast-name">
                 {index === 0
                   ? translate(lang, 'today')
                   : date.toLocaleDateString(locale, { weekday: 'short' })}
-              </small>
-              <strong>
+              </span>
+              <span className="forecast-date">
+                {date.toLocaleDateString(locale, { day: 'numeric', month: 'short' })}
+              </span>
+              <Icon name={day.icon} />
+              <span className="forecast-range">
                 {Math.round(day.min)}° / {Math.round(day.max)}°
-              </strong>
-            </article>
+              </span>
+            </div>
           );
         })}
       </div>

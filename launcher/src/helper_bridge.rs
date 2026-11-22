@@ -1,6 +1,8 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use stellaria_core::telemetry::{GpuTelemetry, MediaAction, MediaSessionInfo, MediaSnapshot, SystemInfo};
@@ -8,11 +10,24 @@ use stellaria_core::telemetry::{GpuTelemetry, MediaAction, MediaSessionInfo, Med
 use crate::environment;
 
 const HELPER_TIMEOUT: Duration = Duration::from_secs(3);
-const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
+#[derive(Clone, PartialEq, Eq)]
 struct HelperCredentials {
     port: u16,
     token: String,
+}
+
+struct PersistentConnection {
+    creds: HelperCredentials,
+    stream: TcpStream,
+}
+
+static CONNECTION: OnceLock<Mutex<Option<PersistentConnection>>> = OnceLock::new();
+static NEXT_REQ_ID: AtomicU64 = AtomicU64::new(1);
+
+fn connection_slot() -> &'static Mutex<Option<PersistentConnection>> {
+    CONNECTION.get_or_init(|| Mutex::new(None))
 }
 
 fn read_credentials() -> Result<HelperCredentials, String> {
@@ -52,9 +67,11 @@ fn encode_client_text_frame(payload: &[u8], mask_key: [u8; 4]) -> Vec<u8> {
 }
 
 fn read_server_text_frame(stream: &mut TcpStream) -> Result<String, String> {
+    let mut message_buf = Vec::new();
     loop {
         let mut header = [0u8; 2];
         stream.read_exact(&mut header).map_err(|e| e.to_string())?;
+        let fin = (header[0] & 0x80) != 0;
         let opcode = header[0] & 0x0f;
         let masked = (header[1] & 0x80) != 0;
         let len_code = header[1] & 0x7f;
@@ -87,14 +104,20 @@ fn read_server_text_frame(stream: &mut TcpStream) -> Result<String, String> {
             }
         }
         match opcode {
-            0x01 => return String::from_utf8(data).map_err(|_| "invalid-utf8".to_string()),
+            0x01 | 0x00 => {
+                message_buf.extend_from_slice(&data);
+                if message_buf.len() > MAX_FRAME_BYTES {
+                    return Err("frame-too-large".to_string());
+                }
+                if fin {
+                    return String::from_utf8(message_buf).map_err(|_| "invalid-utf8".to_string());
+                }
+            }
             0x08 => return Err("helper-closed".to_string()),
             0x09 => {
-                // Respond to ping with pong
-                let pong = encode_client_text_frame(&data, [0x12, 0x34, 0x56, 0x78]);
-                let mut pong_frame = pong;
-                pong_frame[0] = 0x8A;
-                let _ = stream.write_all(&pong_frame);
+                let mut pong = encode_client_text_frame(&data, [0x12, 0x34, 0x56, 0x78]);
+                pong[0] = 0x8A;
+                let _ = stream.write_all(&pong);
             }
             _ => continue,
         }
@@ -109,8 +132,7 @@ fn pseudo_mask() -> [u8; 4] {
     nanos.to_le_bytes()
 }
 
-fn request_helper_sync(method: &str, params: Value) -> Result<Value, String> {
-    let creds = read_credentials()?;
+fn open_connection(creds: HelperCredentials) -> Result<PersistentConnection, String> {
     let addr = SocketAddr::from(([127, 0, 0, 1], creds.port));
     let mut stream = TcpStream::connect_timeout(&addr, HELPER_TIMEOUT).map_err(|_| "helper-offline".to_string())?;
     let _ = stream.set_read_timeout(Some(HELPER_TIMEOUT));
@@ -152,33 +174,32 @@ fn request_helper_sync(method: &str, params: Value) -> Result<Value, String> {
         .write_all(&encode_client_text_frame(auth.to_string().as_bytes(), pseudo_mask()))
         .map_err(|e| e.to_string())?;
 
-    // Wait for hello
-    let mut authed = false;
-    for _ in 0..16 {
+    let deadline = Instant::now() + HELPER_TIMEOUT;
+    while Instant::now() < deadline {
         let text = read_server_text_frame(&mut stream)?;
         let msg: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
         if msg["kind"] == "hello" {
-            authed = true;
-            break;
+            return Ok(PersistentConnection { creds, stream });
         }
     }
-    if !authed {
-        return Err("helper-auth-failed".to_string());
-    }
+    Err("helper-auth-failed".to_string())
+}
 
-    let req_id = "dash-1";
+fn send_on_connection(conn: &mut PersistentConnection, method: &str, params: &Value) -> Result<Value, String> {
+    let req_id = format!("dash-{}", NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed));
     let req = json!({
         "kind": "request",
         "id": req_id,
         "method": method,
         "params": params
     });
-    stream
+    conn.stream
         .write_all(&encode_client_text_frame(req.to_string().as_bytes(), pseudo_mask()))
         .map_err(|e| e.to_string())?;
 
-    for _ in 0..32 {
-        let text = read_server_text_frame(&mut stream)?;
+    let deadline = Instant::now() + HELPER_TIMEOUT;
+    while Instant::now() < deadline {
+        let text = read_server_text_frame(&mut conn.stream)?;
         let msg: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
         if msg["kind"] == "reply" && msg["id"] == req_id {
             if msg["ok"].as_bool().unwrap_or(false) {
@@ -188,8 +209,34 @@ fn request_helper_sync(method: &str, params: Value) -> Result<Value, String> {
             return Err(code.to_string());
         }
     }
-
     Err("helper-timeout".to_string())
+}
+
+fn request_helper_sync(method: &str, params: Value) -> Result<Value, String> {
+    let creds = read_credentials()?;
+    let mut guard = connection_slot().lock().map_err(|_| "busy".to_string())?;
+
+    // Try existing persistent connection if credentials match.
+    if let Some(conn) = guard.as_mut() {
+        if conn.creds == creds {
+            match send_on_connection(conn, method, &params) {
+                Ok(data) => return Ok(data),
+                Err(_) => {
+                    *guard = None;
+                }
+            }
+        } else {
+            *guard = None;
+        }
+    }
+
+    // Reconnect and retry once.
+    let mut fresh = open_connection(creds)?;
+    let result = send_on_connection(&mut fresh, method, &params);
+    if result.is_ok() {
+        *guard = Some(fresh);
+    }
+    result
 }
 
 pub async fn fetch_system_info() -> Result<SystemInfo, String> {

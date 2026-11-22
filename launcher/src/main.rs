@@ -173,6 +173,7 @@ fn main() {
             tray::create(app.handle(), dashboard_pilot)?;
             if dashboard_pilot {
                 dashboard::start_telemetry_loop(app.handle().clone());
+                dashboard::start_hover_edge_watcher(app.handle().clone());
                 if !std::env::args().any(|arg| arg == "--hidden") {
                     dashboard::toggle_from_tray(app.handle());
                 }
