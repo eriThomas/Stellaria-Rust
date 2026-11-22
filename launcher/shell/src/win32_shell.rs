@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Mutex, OnceLock};
@@ -35,10 +35,10 @@ static TASKBAR_HIDDEN_BY_US: AtomicBool = AtomicBool::new(false);
 static SESSION_LOCKED: AtomicBool = AtomicBool::new(false);
 static RECOVERY_TX: OnceLock<mpsc::Sender<RecoveryReason>> = OnceLock::new();
 static TASKBAR_CREATED_MSG: OnceLock<u32> = OnceLock::new();
-static REGISTERED_APPBARS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+static REGISTERED_APPBARS: OnceLock<Mutex<HashMap<usize, (i32, i32, i32, i32)>>> = OnceLock::new();
 
-fn appbar_set() -> &'static Mutex<HashSet<usize>> {
-    REGISTERED_APPBARS.get_or_init(|| Mutex::new(HashSet::new()))
+fn appbar_map() -> &'static Mutex<HashMap<usize, (i32, i32, i32, i32)>> {
+    REGISTERED_APPBARS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn edge_to_abe(edge: BarEdge) -> u32 {
@@ -50,17 +50,31 @@ fn edge_to_abe(edge: BarEdge) -> u32 {
     }
 }
 
-/// Registers (idempotently) and reserves desktop work area for `hwnd` on its physical monitor edge
-/// using `SHAppBarMessage` so desktop icons and maximized windows never extend behind the taskbar.
+/// Registers (idempotently) and reserves desktop work area for `hwnd` on its exact physical monitor edge.
+/// Never allows `ABM_QUERYPOS` to push the bar inward away from the monitor's physical edge.
 pub fn register_and_reserve_appbar(hwnd: HWND, edge: BarEdge, x: i32, y: i32, width: i32, height: i32) {
     if hwnd.is_null() {
         return;
     }
     let key = hwnd as usize;
-    let is_new = appbar_set()
-        .lock()
-        .map(|mut set| set.insert(key))
-        .unwrap_or(false);
+    let target = (x, y, width, height);
+    let (is_new, changed) = match appbar_map().lock() {
+        Ok(mut map) => match map.get(&key).copied() {
+            Some(prev) if prev == target => return, // Already reserved for this exact rect
+            Some(_) => {
+                map.insert(key, target);
+                (false, true)
+            }
+            None => {
+                map.insert(key, target);
+                (true, true)
+            }
+        },
+        Err(_) => return,
+    };
+    if !changed {
+        return;
+    }
 
     unsafe {
         let mut abd: APPBARDATA = std::mem::zeroed();
@@ -77,13 +91,13 @@ pub fn register_and_reserve_appbar(hwnd: HWND, edge: BarEdge, x: i32, y: i32, wi
             bottom: y + height,
         };
         SHAppBarMessage(ABM_QUERYPOS, &mut abd);
-        // Re-assert exact requested thickness after ABM_QUERYPOS
-        match edge {
-            BarEdge::Left => abd.rc.right = abd.rc.left + width,
-            BarEdge::Right => abd.rc.left = abd.rc.right - width,
-            BarEdge::Top => abd.rc.bottom = abd.rc.top + height,
-            BarEdge::Bottom => abd.rc.top = abd.rc.bottom - height,
-        }
+        // Pin strictly to the monitor's exact edge so the primary monitor is never pushed inward.
+        abd.rc = RECT {
+            left: x,
+            top: y,
+            right: x + width,
+            bottom: y + height,
+        };
         SHAppBarMessage(ABM_SETPOS, &mut abd);
     }
 }
@@ -93,9 +107,9 @@ pub fn unregister_appbar(hwnd: HWND) {
         return;
     }
     let key = hwnd as usize;
-    let removed = appbar_set()
+    let removed = appbar_map()
         .lock()
-        .map(|mut set| set.remove(&key))
+        .map(|mut map| map.remove(&key).is_some())
         .unwrap_or(false);
     if removed {
         unsafe {
@@ -108,9 +122,9 @@ pub fn unregister_appbar(hwnd: HWND) {
 }
 
 pub fn unregister_all_appbars() {
-    let hwnds: Vec<usize> = appbar_set()
+    let hwnds: Vec<usize> = appbar_map()
         .lock()
-        .map(|mut set| set.drain().collect())
+        .map(|mut map| map.drain().map(|(k, _)| k).collect())
         .unwrap_or_default();
     for raw in hwnds {
         unsafe {

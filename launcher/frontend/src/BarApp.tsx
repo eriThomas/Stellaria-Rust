@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Icon } from './components/ExpressiveShape';
 import { applyMaterialTheme } from './theme/materialYou';
 import type { DashboardSnapshot, MonitorInfo, WeatherSnapshot } from './types/ipc';
@@ -106,6 +106,7 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
   const [taskbar, setTaskbar] = useState<TaskbarStatePayload | null>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
   const [now, setNow] = useState(() => new Date());
+  const hoverTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -207,14 +208,19 @@ export function BarApp({ monitorLabel, bridge = defaultBridge }: BarAppProps) {
                 title={`${group.displayName}${group.windowCount > 0 ? ` (${group.windowCount})` : ''}`}
                 onClick={() => handleGroupClick(group)}
                 onMouseEnter={e => {
+                  if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
                   if (group.windowCount > 0 && bridge.showPreview) {
                     const rect = e.currentTarget.getBoundingClientRect();
-                    void bridge.showPreview(
-                      view?.monitor.id ?? null,
-                      group.key,
-                      rect.top + rect.height / 2,
-                      'preview',
-                    );
+                    const anchorY = rect.top + rect.height / 2;
+                    hoverTimerRef.current = window.setTimeout(() => {
+                      void bridge.showPreview?.(view?.monitor.id ?? null, group.key, anchorY, 'preview');
+                    }, 220);
+                  }
+                }}
+                onMouseLeave={() => {
+                  if (hoverTimerRef.current) {
+                    window.clearTimeout(hoverTimerRef.current);
+                    hoverTimerRef.current = null;
                   }
                 }}
                 onContextMenu={e => {

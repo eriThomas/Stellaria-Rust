@@ -612,7 +612,7 @@ fn dashboard_get_snapshot(app: AppHandle, state: State<'_, ShellAppState>) -> Re
 }
 
 #[tauri::command]
-fn dashboard_set_visibility(
+async fn dashboard_set_visibility(
     app: AppHandle,
     open: bool,
     monitor_id: Option<String>,
@@ -832,7 +832,7 @@ fn launcher_get_apps(state: State<'_, ShellAppState>) -> Result<Vec<CatalogApp>,
 }
 
 #[tauri::command]
-fn launcher_toggle(app: AppHandle) {
+async fn launcher_toggle(app: AppHandle) {
     toggle_launcher_window(&app);
 }
 
@@ -853,7 +853,7 @@ fn shell_set_bar_edge(app: AppHandle, state: State<'_, ShellAppState>, edge: Bar
 }
 
 #[tauri::command]
-fn preview_show(
+async fn preview_show(
     app: AppHandle,
     state: State<'_, ShellAppState>,
     monitor_id: Option<String>,
